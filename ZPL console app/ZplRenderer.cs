@@ -160,7 +160,8 @@ namespace ZplRendererLib
                                 if (currentState.CurrentBarcodeCommand == null) RenderText(canvas, currentState, command.Parameters ?? "");
                                 break;
                             case "GB": RenderGraphicBox(canvas, currentState, command.Parameters); break; // Graphic Box
-
+                            case "GC": RenderGraphicCircle(canvas, currentState, command.Parameters); break; // **** ADDED **** Graphic Circle
+                            case "GD": RenderGraphicDiagonalLine(canvas, currentState, command.Parameters); break; // **** ADDED **** Graphic Diagonal
                             // Barcode Setup Commands (Set state for next FD)
                             case "BC": HandleBcCommand(currentState, command); break; // Code 128
                             case "B3": HandleB3Command(currentState, command); break; // Code 39
@@ -245,6 +246,83 @@ namespace ZplRendererLib
 
         // --- Command Handler Helper Methods ---
         // (Assuming full implementations exist for these from previous steps)
+        // ^GD - Graphic Diagonal Line
+        private void RenderGraphicDiagonalLine(SKCanvas canvas, ZplRenderState state, string parameters)
+        {
+            // Parameters: w(width), h(height), t(thickness), c(color B/W), o(orientation L/R)
+            int[] defaultValues = { 0, 0, 1 }; // width, height, thickness (default 1)
+            int[] values = ZplRenderState.ParseIntegerParams(parameters, 3, defaultValues); // Parse first 3 int params
+
+            int widthDots = values[0];
+            int heightDots = values[1];
+            int thicknessDots = values[2];
+
+            // Parse color (param 4) and orientation (param 5) separately
+            string[] parts = parameters?.Split(',') ?? Array.Empty<string>();
+            char lineColorChar = 'B'; // Default Black
+            if (parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3]))
+            {
+                lineColorChar = parts[3].Trim().ToUpperInvariant().FirstOrDefault('B');
+            }
+            char orientation = 'R'; // Default Right-leaning (/)
+            if (parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4]))
+            {
+                char o = parts[4].Trim().ToUpperInvariant().FirstOrDefault('R');
+                if (o == 'L') orientation = 'L';
+            }
+
+            _logger.LogDebug("Handling ^GD: W={W}, H={H}, Thick={T}, Color={C}, Orient='{O}'",
+                             widthDots, heightDots, thicknessDots, lineColorChar, orientation);
+
+            if (widthDots <= 0 || heightDots <= 0 || thicknessDots <= 0)
+            {
+                _logger.LogWarning("^GD skipped: Invalid width, height, or thickness ({W}x{H}, T={T}).", widthDots, heightDots, thicknessDots);
+                return; // Cannot draw line with zero dimensions or thickness
+            }
+
+            // Convert ZPL dots to SkiaSharp pixels
+            (float originX, float originY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY);
+            float pixelWidth = state.ConvertDimensionToPixels(widthDots);
+            float pixelHeight = state.ConvertDimensionToPixels(heightDots);
+            float pixelThickness = state.ConvertDimensionToPixels(thicknessDots);
+
+            // Determine start and end points based on orientation
+            float startX, startY, endX, endY;
+            if (orientation == 'L') // Left-leaning (\)
+            {
+                startX = originX;
+                startY = originY;
+                endX = originX + pixelWidth;
+                endY = originY + pixelHeight;
+            }
+            else // Right-leaning (/) - Default
+            {
+                startX = originX;
+                startY = originY + pixelHeight;
+                endX = originX + pixelWidth;
+                endY = originY;
+            }
+
+            using (SKPaint paint = new SKPaint())
+            {
+                // Handle Field Reverse
+                bool isReversed = state.IsFieldReversed;
+                SKColor requestedColor = (lineColorChar == 'W') ? SKColors.White : SKColors.Black;
+                paint.Color = isReversed ? InvertColor(requestedColor) : requestedColor;
+                if (isReversed) _logger.LogTrace("  Applying field reverse (Color: {Color})", paint.Color);
+                state.IsFieldReversed = false; // Reset flag after use
+
+                paint.IsAntialias = true;
+                paint.Style = SKPaintStyle.Stroke;
+                paint.StrokeWidth = Math.Max(1, pixelThickness);
+                paint.StrokeCap = SKStrokeCap.Butt; // Use butt caps for sharp ends
+
+                _logger.LogTrace("Drawing diagonal line from ({X1:F1},{Y1:F1}) to ({X2:F1},{Y2:F1}), Thick={T:F1}, Color={C}",
+                                 startX, startY, endX, endY, paint.StrokeWidth, paint.Color);
+
+                canvas.DrawLine(startX, startY, endX, endY, paint);
+            }
+        }
         private void HandleLhCommand(ZplRenderState state, string parameters)
         {
             int[] defaultValues = { 0, 0 };
@@ -646,7 +724,88 @@ namespace ZplRendererLib
             _logger.LogTrace("    Drawing FB Line: '{Line}' at X={X:F1}, Y={Y:F1}", line, xPos, yPos);
             canvas.DrawText(line, xPos, yPos, paint);
         }
+        // ^GC - Graphic Circle
+        private void RenderGraphicCircle(SKCanvas canvas, ZplRenderState state, string parameters)
+        {
+            // Parameters: d (diameter), t (thickness), c (color B/W)
+            int[] defaultValues = { 0, 1 }; // Default thickness = 1
+            int[] values = ZplRenderState.ParseIntegerParams(parameters, 2, defaultValues); // Parse diameter, thickness
 
+            int diameterDots = values[0];
+            int thicknessDots = values[1];
+
+            // Parse color separately
+            string[] parts = parameters?.Split(',') ?? Array.Empty<string>();
+            char lineColorChar = 'B'; // Default Black
+            if (parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2]))
+            {
+                lineColorChar = parts[2].Trim().ToUpperInvariant().FirstOrDefault('B');
+            }
+
+            _logger.LogDebug("Handling ^GC: Diameter={D}, Thick={T}, Color={C}",
+                             diameterDots, thicknessDots, lineColorChar);
+
+            if (diameterDots <= 0)
+            {
+                _logger.LogWarning("^GC skipped: Invalid diameter ({D}).", diameterDots);
+                return;
+            }
+
+            // Convert ZPL dots to SkiaSharp pixels
+            (float originX, float originY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY);
+            float pixelDiameter = state.ConvertDimensionToPixels(diameterDots);
+            float pixelThickness = state.ConvertDimensionToPixels(thicknessDots);
+            float pixelRadius = pixelDiameter / 2.0f;
+
+            // ZPL ^FO defines top-left of bounding box. Skia draws circle from center.
+            float centerX = originX + pixelRadius;
+            float centerY = originY + pixelRadius;
+
+            using (SKPaint paint = new SKPaint())
+            {
+                // Handle Field Reverse
+                bool isReversed = state.IsFieldReversed;
+                SKColor requestedColor = (lineColorChar == 'W') ? SKColors.White : SKColors.Black;
+                paint.Color = isReversed ? InvertColor(requestedColor) : requestedColor;
+                if (isReversed) _logger.LogTrace("  Applying field reverse (Color: {Color})", paint.Color);
+                state.IsFieldReversed = false; // Reset flag after use
+
+                paint.IsAntialias = true;
+
+                // Handle line thickness vs. fill
+                if (thicknessDots <= 0)
+                {
+                    // Thickness 0 or less means fill the circle
+                    paint.Style = SKPaintStyle.Fill;
+                    _logger.LogTrace("Drawing filled circle at Center=({CX:F1},{CY:F1}), Radius={R:F1}, Color={C}",
+                                     centerX, centerY, pixelRadius, paint.Color);
+                    canvas.DrawCircle(centerX, centerY, pixelRadius, paint);
+                }
+                else
+                {
+                    // Thickness > 0 means draw a border
+                    paint.Style = SKPaintStyle.Stroke;
+                    paint.StrokeWidth = Math.Max(1, pixelThickness); // Ensure minimum 1 pixel stroke width
+
+                    // Adjust radius for stroke width (draws border centered on the radius)
+                    // To keep outer edge correct, draw at radius - half_stroke_width
+                    float adjustedRadius = pixelRadius - (paint.StrokeWidth / 2.0f);
+                    if (adjustedRadius <= 0)
+                    {
+                        _logger.LogWarning("^GC border thickness {T} is too large for diameter {D}. Drawing filled circle instead.", pixelThickness, pixelDiameter);
+                        paint.Style = SKPaintStyle.Fill;
+                        adjustedRadius = pixelRadius; // Draw filled circle with original radius
+                        canvas.DrawCircle(centerX, centerY, adjustedRadius, paint);
+                    }
+                    else
+                    {
+                        _logger.LogTrace("Drawing bordered circle at Center=({CX:F1},{CY:F1}), Radius={R:F1}, Thick={T:F1}, Color={C}",
+                                         centerX, centerY, adjustedRadius, paint.StrokeWidth, paint.Color);
+                        canvas.DrawCircle(centerX, centerY, adjustedRadius, paint);
+                    }
+                }
+            }
+        }
         private void RenderBarcode(SKCanvas canvas, ZplRenderState state, string data)
         {
             if (state.CurrentBarcodeCommand == null || data == null) { _logger.LogWarning("RenderBarcode cannot execute: Invalid state or missing data."); return; }

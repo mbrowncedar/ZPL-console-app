@@ -45,7 +45,7 @@ namespace ZplRendererTester
 ^FO220,155^FDShelbyville TN 38102^FS
 ^FO220,195^FDUnited States (USA)^FS
 ^FO50,250^GB700,3,3^FS
-
+   ^FO50,300^GD400,100,5,B,L^FS
 ^FX Second section with recipient address and permit information.
 ^CFA,30
 ^FO50,300^FDJohn Doe^FS
@@ -60,7 +60,7 @@ namespace ZplRendererTester
 
 ^FX Third section with bar code.
 ^BY5,2,270
-^FO100,550^BC^FD12345678^FS
+^FO100,550^BX^FD12345678^FS
 
 ^FX Fourth section (the two boxes on the bottom).
 ^FO50,900^GB700,250,3^FS
