@@ -14,6 +14,8 @@ using ZXing.SkiaSharp; // Added for BarcodeWriter
 using ZXing.SkiaSharp.Rendering; // Also useful for the renderer if needed later
 using System.Globalization;
 using System.Runtime.InteropServices; // Needed for Marshal, IntPtr and OSPlatform check
+using ZXing.PDF417.Internal; // For PDF417 EC Level hint
+using ZXing.Datamatrix.Encoder; // For DataMatrix hints
 
 namespace ZplRendererLib
 {
@@ -163,6 +165,10 @@ namespace ZplRendererLib
                             case "BC": HandleBcCommand(currentState, command); break; // Code 128
                             case "B3": HandleB3Command(currentState, command); break; // Code 39
                             case "BQ": HandleBqCommand(currentState, command); break; // QR Code
+                            case "BE": HandleBeCommand(currentState, command); break; // EAN       // **** ADDED ****
+                            case "BU": HandleBuCommand(currentState, command); break; // UPC       // **** ADDED ****
+                            case "B7": HandleB7Command(currentState, command); break; // PDF417    // **** ADDED ****
+                            case "BX": HandleBxCommand(currentState, command); break; // DataMatrix// **** ADDED ****
                             // Add other barcode setup cases here
 
                             // Image Commands
@@ -295,6 +301,93 @@ namespace ZplRendererLib
             }
             state.CurrentFontIdentifier = fontPath; state.CurrentFontRotation = orientation; state.CurrentFontHeightDots = height; state.CurrentFontWidthDots = width;
             _logger.LogDebug("Handled ^A@: Font set to Path='{Path}', Orient={O}, H={H}, W={W}", state.CurrentFontIdentifier, state.CurrentFontRotation, state.CurrentFontHeightDots, state.CurrentFontWidthDots);
+        }
+        // **** ADDED NEW HANDLERS ****
+        // ^BE - EAN
+        private void HandleBeCommand(ZplRenderState state, ZplCommand command)
+        {
+            _logger.LogDebug("Setting up ^BE (EAN) barcode state.");
+            state.CurrentBarcodeCommand = command;
+            state.CurrentBarcodeParams.Clear();
+            // Params: o, h, f, g (orient, height, interpretation line, line above)
+            if (!string.IsNullOrEmpty(command.Parameters))
+            {
+                string[] parts = command.Parameters.Split(',');
+                _logger.LogTrace("Parsing ^BE parameters: {Params}", command.Parameters);
+                if (parts.Length > 0 && !string.IsNullOrWhiteSpace(parts[0])) state.CurrentBarcodeParams["Orientation"] = parts[0].Trim().ToUpperInvariant();
+                if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])) state.CurrentBarcodeParams["Height"] = parts[1].Trim();
+                if (parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2])) state.CurrentBarcodeParams["PrintInterpretationLine"] = parts[2].Trim().ToUpperInvariant();
+                if (parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3])) state.CurrentBarcodeParams["LineAbove"] = parts[3].Trim().ToUpperInvariant();
+                foreach (var kvp in state.CurrentBarcodeParams) { _logger.LogTrace("  Stored Barcode Param: {Key} = '{Value}'", kvp.Key, kvp.Value); }
+            }
+            else { _logger.LogTrace("No parameters provided for ^BE."); }
+        }
+
+        // ^BU - UPC
+        private void HandleBuCommand(ZplRenderState state, ZplCommand command)
+        {
+            _logger.LogDebug("Setting up ^BU (UPC) barcode state.");
+            state.CurrentBarcodeCommand = command;
+            state.CurrentBarcodeParams.Clear();
+            // Params: o, h, f, g, e (orient, height, interpretation line, line above, check digit)
+            if (!string.IsNullOrEmpty(command.Parameters))
+            {
+                string[] parts = command.Parameters.Split(',');
+                _logger.LogTrace("Parsing ^BU parameters: {Params}", command.Parameters);
+                if (parts.Length > 0 && !string.IsNullOrWhiteSpace(parts[0])) state.CurrentBarcodeParams["Orientation"] = parts[0].Trim().ToUpperInvariant();
+                if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])) state.CurrentBarcodeParams["Height"] = parts[1].Trim();
+                if (parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2])) state.CurrentBarcodeParams["PrintInterpretationLine"] = parts[2].Trim().ToUpperInvariant();
+                if (parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3])) state.CurrentBarcodeParams["LineAbove"] = parts[3].Trim().ToUpperInvariant();
+                if (parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4])) state.CurrentBarcodeParams["PrintCheckDigit"] = parts[4].Trim().ToUpperInvariant(); // ZPL param 'e'
+                foreach (var kvp in state.CurrentBarcodeParams) { _logger.LogTrace("  Stored Barcode Param: {Key} = '{Value}'", kvp.Key, kvp.Value); }
+            }
+            else { _logger.LogTrace("No parameters provided for ^BU."); }
+        }
+
+        // ^B7 - PDF417
+        private void HandleB7Command(ZplRenderState state, ZplCommand command)
+        {
+            _logger.LogDebug("Setting up ^B7 (PDF417) barcode state.");
+            state.CurrentBarcodeCommand = command;
+            state.CurrentBarcodeParams.Clear();
+            // Params: o, h, s, c, r, t (orient, height, security, columns, rows, truncate)
+            if (!string.IsNullOrEmpty(command.Parameters))
+            {
+                string[] parts = command.Parameters.Split(',');
+                _logger.LogTrace("Parsing ^B7 parameters: {Params}", command.Parameters);
+                if (parts.Length > 0 && !string.IsNullOrWhiteSpace(parts[0])) state.CurrentBarcodeParams["Orientation"] = parts[0].Trim().ToUpperInvariant();
+                if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])) state.CurrentBarcodeParams["Height"] = parts[1].Trim(); // Module height
+                if (parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2])) state.CurrentBarcodeParams["SecurityLevel"] = parts[2].Trim();
+                if (parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3])) state.CurrentBarcodeParams["Columns"] = parts[3].Trim();
+                if (parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4])) state.CurrentBarcodeParams["Rows"] = parts[4].Trim();
+                if (parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5])) state.CurrentBarcodeParams["Truncate"] = parts[5].Trim().ToUpperInvariant();
+                foreach (var kvp in state.CurrentBarcodeParams) { _logger.LogTrace("  Stored Barcode Param: {Key} = '{Value}'", kvp.Key, kvp.Value); }
+            }
+            else { _logger.LogTrace("No parameters provided for ^B7."); }
+        }
+
+        // ^BX - DataMatrix
+        private void HandleBxCommand(ZplRenderState state, ZplCommand command)
+        {
+            _logger.LogDebug("Setting up ^BX (DataMatrix) barcode state.");
+            state.CurrentBarcodeCommand = command;
+            state.CurrentBarcodeParams.Clear();
+            // Params: o, h, q, c, r, f, g, a (orient, height, quality, columns, rows, format, escape, aspect)
+            if (!string.IsNullOrEmpty(command.Parameters))
+            {
+                string[] parts = command.Parameters.Split(',');
+                _logger.LogTrace("Parsing ^BX parameters: {Params}", command.Parameters);
+                if (parts.Length > 0 && !string.IsNullOrWhiteSpace(parts[0])) state.CurrentBarcodeParams["Orientation"] = parts[0].Trim().ToUpperInvariant();
+                if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])) state.CurrentBarcodeParams["Height"] = parts[1].Trim(); // Module height
+                // Param q (quality) is complex, often relates to print quality, ignore for rendering
+                if (parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3])) state.CurrentBarcodeParams["Columns"] = parts[3].Trim();
+                if (parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4])) state.CurrentBarcodeParams["Rows"] = parts[4].Trim();
+                if (parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5])) state.CurrentBarcodeParams["FormatId"] = parts[5].Trim();
+                if (parts.Length > 6 && !string.IsNullOrWhiteSpace(parts[6])) state.CurrentBarcodeParams["Escape"] = parts[6].Trim(); // Not directly used by ZXing
+                if (parts.Length > 7 && !string.IsNullOrWhiteSpace(parts[7])) state.CurrentBarcodeParams["AspectRatio"] = parts[7].Trim(); // 1=square, 2=rectangle
+                foreach (var kvp in state.CurrentBarcodeParams) { _logger.LogTrace("  Stored Barcode Param: {Key} = '{Value}'", kvp.Key, kvp.Value); }
+            }
+            else { _logger.LogTrace("No parameters provided for ^BX."); }
         }
         private SKColor InvertColor(SKColor color) { if (color == SKColors.Black) return SKColors.White; if (color == SKColors.White) return SKColors.Black; return color; }
         private void RenderGraphicBox(SKCanvas canvas, ZplRenderState state, string parameters)
@@ -447,7 +540,22 @@ namespace ZplRendererLib
         }
         private BarcodeFormat? MapZplToZXingFormat(string zplCommandCode)
         {
-            switch (zplCommandCode?.ToUpperInvariant()) { case "BC": return BarcodeFormat.CODE_128; case "B3": return BarcodeFormat.CODE_39; case "BQ": return BarcodeFormat.QR_CODE; default: _logger.LogWarning("MapZplToZXingFormat: No mapping for ZPL command {Cmd}", zplCommandCode); return null; }
+            switch (zplCommandCode?.ToUpperInvariant())
+            {
+                case "BC": return BarcodeFormat.CODE_128;
+                case "B3": return BarcodeFormat.CODE_39;
+                case "BQ": return BarcodeFormat.QR_CODE;
+                case "BE": // EAN-8 or EAN-13 (ZXing detects based on data length)
+                    return BarcodeFormat.EAN_13; // Default to EAN_13, writer handles EAN_8 too
+                case "BU": // UPC-A or UPC-E (ZXing detects based on data length)
+                    return BarcodeFormat.UPC_A; // Default to UPC_A, writer handles UPC_E too
+                case "B7": return BarcodeFormat.PDF_417;
+                case "BX": return BarcodeFormat.DATA_MATRIX;
+                /* Add others cases here as needed */
+                default:
+                    _logger.LogWarning("MapZplToZXingFormat: No mapping for ZPL command {Cmd}", zplCommandCode);
+                    return null;
+            }
         }
         private void HandleBqCommand(ZplRenderState state, ZplCommand command)
         {
@@ -542,27 +650,229 @@ namespace ZplRendererLib
         private void RenderBarcode(SKCanvas canvas, ZplRenderState state, string data)
         {
             if (state.CurrentBarcodeCommand == null || data == null) { _logger.LogWarning("RenderBarcode cannot execute: Invalid state or missing data."); return; }
-            string commandCode = state.CurrentBarcodeCommand.CommandCode; _logger.LogDebug("==> Attempting RenderBarcode: {Cmd}, Data='{Data}'", commandCode, data); SKBitmap barcodeBitmap = null;
+
+            string commandCode = state.CurrentBarcodeCommand.CommandCode;
+            _logger.LogDebug("==> Attempting RenderBarcode: {Cmd}, Data='{Data}'", commandCode, data);
+
+            SKBitmap barcodeBitmap = null;
             try
             {
-                BarcodeFormat? zxingFormat = MapZplToZXingFormat(commandCode); if (zxingFormat == null) { _logger.LogWarning("Cannot map ZPL command '{Cmd}' to a supported ZXing format.", commandCode); return; }
-                char orientation = state.GetBarcodeParam("Orientation", "N").ToUpperInvariant().FirstOrDefault('N'); int barcodeHeightDots = state.GetBarcodeIntParam("Height", state.BarcodeHeightDots); bool printInterpretationLine = state.GetBarcodeBoolParam("PrintInterpretationLine", true); bool interpAbove = state.GetBarcodeBoolParam("LineAbove", false); int zplModuleWidthDots = state.BarcodeModuleWidthDots;
-                _logger.LogTrace("  Retrieved Common Params: Orient='{O}', Height={H}d, ZplModWidth={Mw}d, PrintLine={P}, LineAbove={La}", orientation, barcodeHeightDots, zplModuleWidthDots, printInterpretationLine, interpAbove);
-                int pixelHeight = (int)state.ConvertDimensionToPixels(barcodeHeightDots); int pixelWidth = 0; if (pixelHeight <= 0) pixelHeight = 10;
-                var writerOptions = new ZXing.Common.EncodingOptions { Margin = 0 }; int zplMagnification = 1;
-                if (zxingFormat == BarcodeFormat.QR_CODE)
+                // 1. Map ZPL command to ZXing Format
+                BarcodeFormat? zxingFormat = MapZplToZXingFormat(commandCode);
+                if (zxingFormat == null) { _logger.LogWarning("Cannot map ZPL command '{Cmd}' to a supported ZXing format.", commandCode); return; }
+
+                // 2. Get Common Parameters from State
+                char orientation = state.GetBarcodeParam("Orientation", "N").ToUpperInvariant().FirstOrDefault('N');
+                int barcodeHeightDots = state.GetBarcodeIntParam("Height", state.BarcodeHeightDots); // Used for 1D/PDF height
+                bool printInterpretationLine = state.GetBarcodeBoolParam("PrintInterpretationLine", true); // Used for 1D/EAN/UPC
+                bool interpAbove = state.GetBarcodeBoolParam("LineAbove", false); // Used for 1D/EAN/UPC
+                int zplModuleWidthDots = state.BarcodeModuleWidthDots; // Used for 1D/PDF scaling
+
+                _logger.LogTrace("  Retrieved Common Params: Orient='{O}', Height={H}d, ZplModWidth={Mw}d, PrintLine={P}, LineAbove={La}",
+                                 orientation, barcodeHeightDots, zplModuleWidthDots, printInterpretationLine, interpAbove);
+
+                // 3. Configure ZXing Writer Options
+                int pixelHeight = (int)state.ConvertDimensionToPixels(barcodeHeightDots);
+                int pixelWidth = 0;
+                if (pixelHeight <= 0) pixelHeight = 10;
+
+                var writerOptions = new ZXing.Common.EncodingOptions { Margin = 0 };
+              //  if (writerOptions.Hints == null) writerOptions.Hints = new Dictionary<EncodeHintType, object>();
+
+                // --- Barcode Type Specific Options & Scaling ---
+                int zplMagnification = 1; // Used for QR, DataMatrix
+                bool is2D = false;
+
+                switch (zxingFormat.Value)
                 {
-                    printInterpretationLine = false; zplMagnification = state.GetBarcodeIntParam("Magnification", 3); zplMagnification = Math.Clamp(zplMagnification, 1, 10); string ecl = state.GetBarcodeParam("ErrorCorrection", "M"); var errorCorrectionLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M; switch (ecl) { case "H": errorCorrectionLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.H; break; case "Q": errorCorrectionLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.Q; break; case "M": errorCorrectionLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M; break; case "L": errorCorrectionLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.L; break; }
-             //       if (writerOptions.Hints == null) writerOptions.Hints = new Dictionary<EncodeHintType, object>(); writerOptions.Hints[EncodeHintType.ERROR_CORRECTION] = errorCorrectionLevel; writerOptions.Hints[EncodeHintType.CHARACTER_SET] = "UTF-8"; _logger.LogTrace("  QR Code Params: ZplMagnification={Mag}, ErrorCorrection={ECL}, Charset=UTF-8", zplMagnification, errorCorrectionLevel); writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true;
+                    case BarcodeFormat.QR_CODE:
+                        is2D = true;
+                        printInterpretationLine = false;
+                        zplMagnification = state.GetBarcodeIntParam("Magnification", 3);
+                        zplMagnification = Math.Clamp(zplMagnification, 1, 10);
+                        string eclQR = state.GetBarcodeParam("ErrorCorrection", "M");
+                        var qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M;
+                        switch (eclQR) { case "H": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.H; break; case "Q": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.Q; break; case "M": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M; break; case "L": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.L; break; }
+                        writerOptions.Hints[EncodeHintType.ERROR_CORRECTION] = qrEcLevel;
+                        writerOptions.Hints[EncodeHintType.CHARACTER_SET] = "UTF-8";
+                        _logger.LogTrace("  QR Code Params: ZplMagnification={Mag}, ErrorCorrection={ECL}, Charset=UTF-8", zplMagnification, qrEcLevel);
+                        writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true;
+                        break;
+
+                    case BarcodeFormat.PDF_417:
+                        is2D = true;
+                        printInterpretationLine = false; // PDF417 usually doesn't have one
+                        int securityLevel = state.GetBarcodeIntParam("SecurityLevel", 5); // Default 5? Check ZPL spec
+                        int cols = state.GetBarcodeIntParam("Columns", 0); // 0 = auto
+                        int rows = state.GetBarcodeIntParam("Rows", 0);    // 0 = auto
+                        bool truncate = state.GetBarcodeBoolParam("Truncate", false);
+
+                        // Map ZPL security 0-8 to ZXing EC levels 0-8
+                        writerOptions.Hints[EncodeHintType.ERROR_CORRECTION] = Math.Clamp(securityLevel, 0, 8); // Use the general Error Correction hint
+
+                        // **** START CORRECTION ****
+                        // Use PDF417_DIMENSIONS hint with a Dimension object
+                        if (cols > 0 || rows > 0)
+                        {
+                            // Specify exact dimensions if both are provided, otherwise min/max might be needed
+                            // Note: ZXing Dimension constructor might be (width, height) -> (cols, rows)
+                            // Let's assume fixed dimensions if specified. Min/Max might need more complex options.
+                            int minCols = cols > 0 ? cols : 1; // Example minimums if one is auto
+                            int maxCols = cols > 0 ? cols : 30; // ZXing default max is 30
+                            int minRows = rows > 0 ? rows : 3; // ZXing default min is 3
+                            int maxRows = rows > 0 ? rows : 90; // ZXing default max is 90
+
+                            // Create Dimension object (Check constructor order if needed)
+                            if (cols > 0 && rows > 0)
+                            {
+                                // Create Dimension object using (width, height) -> (cols, rows)
+                                var dimensions = new ZXing.Dimension(cols, rows);
+                                writerOptions.Hints[EncodeHintType.PDF417_DIMENSIONS] = dimensions;
+                                _logger.LogTrace("  Setting PDF417 Dimensions Hint: Cols={C}, Rows={R}", cols, rows);
+                            }
+                            else
+                            {
+                                _logger.LogTrace("  Using auto PDF417 dimensions (Cols or Rows not specified).");
+                                // Do not add the hint if rows/cols are auto
+                            }
+
+                            //var dimensions = new ZXing.Common.Dimension(maxCols, minCols, maxRows, minRows);
+                            //writerOptions.Hints[EncodeHintType.PDF417_DIMENSIONS] = dimensions;
+                            //_logger.LogTrace("  Setting PDF417 Dimensions Hint: Min({MinC},{MinR}), Max({MaxC},{MaxR})", minCols, minRows, maxCols, maxRows);
+
+
+
+                        }
+                        // REMOVED incorrect hints:
+                        // if (cols > 0) writerOptions.Hints[EncodeHintType.PDF417_MAX_COLS] = cols;
+                        // if (rows > 0) writerOptions.Hints[EncodeHintType.PDF417_MAX_ROWS] = rows;
+                        // **** END CORRECTION ****
+
+                        writerOptions.Hints[EncodeHintType.PDF417_COMPACT] = truncate; // Use compact mode if truncated?
+
+                        _logger.LogTrace("  PDF417 Params: SecLvl={Sec}, Cols={C}, Rows={R}, Trunc={T}", securityLevel, cols, rows, truncate);
+                        writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true;
+                        break;
+
+                    case BarcodeFormat.DATA_MATRIX:
+                        is2D = true;
+                        printInterpretationLine = false;
+                        // ZPL ^BX height is module height in dots. Magnification isn't a direct ZPL param here.
+                        // Let's use ZplModuleWidthDots for scaling factor like PDF417 height? Or default mag? Use ZplModuleWidthDots for now.
+                        zplMagnification = zplModuleWidthDots; // Reuse module width as magnification factor
+                        int dmCols = state.GetBarcodeIntParam("Columns", 0); // 0 = auto
+                        int dmRows = state.GetBarcodeIntParam("Rows", 0);    // 0 = auto
+                        // Format ID ignored for now
+                        int dmAspect = state.GetBarcodeIntParam("AspectRatio", 1); // 1=square, 2=rect
+
+                        if (dmCols > 0 && dmRows > 0)
+                        {
+                            writerOptions.Hints[EncodeHintType.DATA_MATRIX_SHAPE] = (dmAspect == 2) ? SymbolShapeHint.FORCE_RECTANGLE : SymbolShapeHint.FORCE_SQUARE;
+                            // ZXing might need specific dimensions set if not square/auto
+                            // writerOptions.Hints[EncodeHintType.DATA_MATRIX_MIN_SIZE] = new Dimension(dmCols, dmRows); // Need ZXing Dimension class
+                            // writerOptions.Hints[EncodeHintType.DATA_MATRIX_MAX_SIZE] = new Dimension(dmCols, dmRows);
+                            _logger.LogWarning("DataMatrix fixed Columns/Rows hints not fully implemented.");
+                        }
+                        else
+                        {
+                            writerOptions.Hints[EncodeHintType.DATA_MATRIX_SHAPE] = SymbolShapeHint.FORCE_NONE; // Auto shape
+                        }
+                        writerOptions.Hints[EncodeHintType.CHARACTER_SET] = "UTF-8"; // Assume UTF-8
+                        _logger.LogTrace("  DataMatrix Params: ZplMagnification={Mag}, Cols={C}, Rows={R}, Aspect={A}", zplMagnification, dmCols, dmRows, dmAspect);
+                        writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true;
+                        break;
+
+                    case BarcodeFormat.EAN_8:
+                    case BarcodeFormat.EAN_13:
+                    case BarcodeFormat.UPC_A:
+                    case BarcodeFormat.UPC_E:
+                        // Use standard 1D options
+                        writerOptions.Height = pixelHeight;
+                        writerOptions.Width = 0;
+                        writerOptions.PureBarcode = true;// !printInterpretationLine;
+                        // Check digit handling is usually automatic in ZXing for these formats
+                        break;
+
+                    default: // Other 1D codes
+                        writerOptions.Height = pixelHeight;
+                        writerOptions.Width = 0;
+                        writerOptions.PureBarcode = true; // !printInterpretationLine;
+                        break;
                 }
-                else { writerOptions.Height = pixelHeight; writerOptions.Width = 0; writerOptions.PureBarcode = true; } //!printInterpretationLine; }
-                var writer = new ZXing.SkiaSharp.BarcodeWriter { Format = zxingFormat.Value, Options = writerOptions }; _logger.LogDebug("  Calling SkiaSharp ZXing Writer: Format={Fmt}, Options(H={H},W={W},Pure={P})", writer.Format, writerOptions.Height, writerOptions.Width, writerOptions.PureBarcode);
-                barcodeBitmap = writer.Write(data); if (barcodeBitmap == null || barcodeBitmap.Width <= 0 || barcodeBitmap.Height <= 0) { _logger.LogError("SkiaSharp ZXing Write failed to generate bitmap for {Fmt}, Data='{Data}'", zxingFormat.Value, data); return; }
+
+                // 4. Use SkiaSharp Barcode Writer
+                var writer = new ZXing.SkiaSharp.BarcodeWriter
+                {
+                    Format = zxingFormat.Value,
+                    Options = writerOptions
+                };
+                _logger.LogDebug("  Calling SkiaSharp ZXing Writer: Format={Fmt}, Options(H={H},W={W},Pure={P})",
+                                writer.Format, writerOptions.Height, writerOptions.Width, writerOptions.PureBarcode);
+
+                // 5. Generate initial SKBitmap
+                barcodeBitmap = writer.Write(data);
+
+                if (barcodeBitmap == null || barcodeBitmap.Width <= 0 || barcodeBitmap.Height <= 0) { _logger.LogError("SkiaSharp ZXing Write failed to generate bitmap for {Fmt}, Data='{Data}'", zxingFormat.Value, data); return; }
                 _logger.LogDebug("  SkiaSharp ZXing generated initial bitmap: {W}x{H}", barcodeBitmap.Width, barcodeBitmap.Height);
-                float targetPixelWidth; float targetPixelHeight; if (zxingFormat == BarcodeFormat.QR_CODE) { float scaleFactor = zplMagnification; targetPixelWidth = barcodeBitmap.Width * scaleFactor; targetPixelHeight = barcodeBitmap.Height * scaleFactor; _logger.LogTrace("  Scaling QR Code using ZplMagnification={Mag}: Target Size={TW:F0}x{TH:F0}", zplMagnification, targetPixelWidth, targetPixelHeight); } else { targetPixelWidth = barcodeBitmap.Width * zplModuleWidthDots; targetPixelHeight = pixelHeight; _logger.LogTrace("  Scaling 1D Barcode using ZplModWidth={ZplW}: Target Size={TW:F0}x{TH:F0}", zplModuleWidthDots, targetPixelWidth, targetPixelHeight); }
-                (float pixelX, float pixelY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY); _logger.LogDebug("  Drawing barcode at canvas coordinates ({Px:F1},{Py:F1})", pixelX, pixelY); SKRect destRect = SKRect.Create(pixelX, pixelY, targetPixelWidth, targetPixelHeight);
-                bool isRotated = (orientation != 'N'); if (isRotated) { canvas.Save(); float degrees = 0; switch (orientation) { case 'R': degrees = 90; break; case 'I': degrees = 180; break; case 'B': degrees = 270; break; } canvas.RotateDegrees(degrees, pixelX, pixelY); _logger.LogDebug("  Applied canvas rotation: {Deg} degrees around ({Px:F1},{Py:F1})", degrees, pixelX, pixelY); }
-                try { using (var paint = new SKPaint { FilterQuality = SKFilterQuality.None }) { canvas.DrawBitmap(barcodeBitmap, destRect, paint); } _logger.LogDebug("  Drew scaled barcode bitmap into DestRect ({L:F1}, {T:F1}, {W:F1}, {H:F1})", destRect.Left, destRect.Top, destRect.Width, destRect.Height); if (zxingFormat != BarcodeFormat.QR_CODE && printInterpretationLine) { RenderInterpretationLine(canvas, state, data, destRect.Left, destRect.Top, destRect.Width, destRect.Height, interpAbove, orientation); } } finally { if (isRotated) { canvas.Restore(); _logger.LogDebug("  Restored canvas state after rotation."); } }
+
+                // 6. Calculate Target Dimensions based on ZPL parameters
+                float targetPixelWidth;
+                float targetPixelHeight;
+
+                if (zxingFormat == BarcodeFormat.QR_CODE || zxingFormat == BarcodeFormat.DATA_MATRIX)
+                {
+                    // Scale 2D codes based on ZPL magnification parameter (using zplMagnification calculated above)
+                    float scaleFactor = zplMagnification;
+                    targetPixelWidth = barcodeBitmap.Width * scaleFactor;
+                    targetPixelHeight = barcodeBitmap.Height * scaleFactor;
+                    _logger.LogTrace("  Scaling 2D Code using Factor={Factor}: Target Size={TW:F0}x{TH:F0}",
+                                    scaleFactor, targetPixelWidth, targetPixelHeight);
+                }
+                else if (zxingFormat == BarcodeFormat.PDF_417)
+                {
+                    // PDF417 height (^B7,,h) is module height. Width scales proportionally.
+                    // ZXing bitmap height should roughly correspond to (rows * module_height_pixels).
+                    // ZPL module height comes from ^BY w.
+                    // Scale factor = (Target Module Height / Generated Module Height)
+                    // We don't know generated module height easily.
+                    // Alternative: Scale width like other 1D codes, scale height based on ^B7 h param?
+                    // Let's try scaling width by module width, and height by ^B7 h param.
+                    targetPixelWidth = barcodeBitmap.Width * zplModuleWidthDots; // Scale width by module width
+                    targetPixelHeight = pixelHeight; // Use height parsed from ^B7 h param
+                    _logger.LogTrace("  Scaling PDF417 using ZplModWidth={ZplW} and ZplHeight={ZplH}: Target Size={TW:F0}x{TH:F0}",
+                                    zplModuleWidthDots, barcodeHeightDots, targetPixelWidth, targetPixelHeight);
+                }
+                else // Other 1D Barcodes (EAN, UPC, Code39, Code128 etc.)
+                {
+                    // Scale 1D barcode width based on ZPL module width 'w' (^BY w)
+                    targetPixelWidth = barcodeBitmap.Width * zplModuleWidthDots;
+                    targetPixelHeight = pixelHeight; // Height was already set from ^BY h or barcode param h
+                    _logger.LogTrace("  Scaling 1D Barcode using ZplModWidth={ZplW}: Target Size={TW:F0}x{TH:F0}",
+                                    zplModuleWidthDots, targetPixelWidth, targetPixelHeight);
+                }
+
+                // 7. Get Drawing Position & Define Destination Rect
+                (float pixelX, float pixelY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY);
+                _logger.LogDebug("  Drawing barcode at canvas coordinates ({Px:F1},{Py:F1})", pixelX, pixelY);
+                SKRect destRect = SKRect.Create(pixelX, pixelY, targetPixelWidth, targetPixelHeight);
+
+                // 8. Handle Rotation and Draw
+                bool isRotated = (orientation != 'N');
+                if (isRotated) { canvas.Save(); /* ... rotate ... */ float degrees = 0; switch (orientation) { case 'R': degrees = 90; break; case 'I': degrees = 180; break; case 'B': degrees = 270; break; } canvas.RotateDegrees(degrees, pixelX, pixelY); _logger.LogDebug("  Applied canvas rotation: {Deg} degrees around ({Px:F1},{Py:F1})", degrees, pixelX, pixelY); }
+                try
+                {
+                    // 9. Draw Scaled Bitmap
+                    using (var paint = new SKPaint { FilterQuality = SKFilterQuality.None }) // Use None for sharp barcodes
+                    { canvas.DrawBitmap(barcodeBitmap, destRect, paint); }
+                    _logger.LogDebug("  Drew scaled barcode bitmap into DestRect ({L:F1}, {T:F1}, {W:F1}, {H:F1})", destRect.Left, destRect.Top, destRect.Width, destRect.Height);
+
+                    // 10. Draw interpretation line if needed (only for 1D codes, EAN, UPC)
+                    if (!is2D && printInterpretationLine)
+                    {
+                        RenderInterpretationLine(canvas, state, data, destRect.Left, destRect.Top, destRect.Width, destRect.Height, interpAbove, orientation);
+                    }
+                }
+                finally { if (isRotated) { canvas.Restore(); _logger.LogDebug("  Restored canvas state after rotation."); } }
             }
             catch (Exception ex) { _logger.LogError(ex, "Error rendering barcode {Cmd}, Data='{Data}'", commandCode, data); }
             finally { barcodeBitmap?.Dispose(); state.CurrentBarcodeCommand = null; state.CurrentBarcodeParams.Clear(); }
