@@ -162,6 +162,7 @@ namespace ZplRendererLib
                             case "GB": RenderGraphicBox(canvas, currentState, command.Parameters); break; // Graphic Box
                             case "GC": RenderGraphicCircle(canvas, currentState, command.Parameters); break; // **** ADDED **** Graphic Circle
                             case "GD": RenderGraphicDiagonalLine(canvas, currentState, command.Parameters); break; // **** ADDED **** Graphic Diagonal
+                            case "GE": RenderGraphicEllipse(canvas, currentState, command.Parameters); break; // **** ADDED **** Graphic Ellipse
                             // Barcode Setup Commands (Set state for next FD)
                             case "BC": HandleBcCommand(currentState, command); break; // Code 128
                             case "B3": HandleB3Command(currentState, command); break; // Code 39
@@ -247,6 +248,87 @@ namespace ZplRendererLib
         // --- Command Handler Helper Methods ---
         // (Assuming full implementations exist for these from previous steps)
         // ^GD - Graphic Diagonal Line
+        // ^GE - Graphic Ellipse
+        private void RenderGraphicEllipse(SKCanvas canvas, ZplRenderState state, string parameters)
+        {
+            // Parameters: w(width), h(height), t(thickness), c(color B/W)
+            int[] defaultValues = { 0, 0, 1 }; // width, height, thickness (default 1)
+            int[] values = ZplRenderState.ParseIntegerParams(parameters, 3, defaultValues); // Parse first 3 int params
+
+            int widthDots = values[0];
+            int heightDots = values[1];
+            int thicknessDots = values[2];
+
+            // Parse color (param 4) separately
+            string[] parts = parameters?.Split(',') ?? Array.Empty<string>();
+            char lineColorChar = 'B'; // Default Black
+            if (parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3]))
+            {
+                lineColorChar = parts[3].Trim().ToUpperInvariant().FirstOrDefault('B');
+            }
+
+            _logger.LogDebug("Handling ^GE: W={W}, H={H}, Thick={T}, Color={C}",
+                             widthDots, heightDots, thicknessDots, lineColorChar);
+
+            if (widthDots <= 0 || heightDots <= 0)
+            {
+                _logger.LogWarning("^GE skipped: Invalid width or height ({W}x{H}).", widthDots, heightDots);
+                return;
+            }
+
+            // Convert ZPL dots to SkiaSharp pixels
+            (float originX, float originY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY);
+            float pixelWidth = state.ConvertDimensionToPixels(widthDots);
+            float pixelHeight = state.ConvertDimensionToPixels(heightDots);
+            float pixelThickness = state.ConvertDimensionToPixels(thicknessDots);
+
+            // Define the bounding rectangle for the ellipse
+            SKRect ovalRect = SKRect.Create(originX, originY, pixelWidth, pixelHeight);
+
+            using (SKPaint paint = new SKPaint())
+            {
+                // Handle Field Reverse
+                bool isReversed = state.IsFieldReversed;
+                SKColor requestedColor = (lineColorChar == 'W') ? SKColors.White : SKColors.Black;
+                paint.Color = isReversed ? InvertColor(requestedColor) : requestedColor;
+                if (isReversed) _logger.LogTrace("  Applying field reverse (Color: {Color})", paint.Color);
+                state.IsFieldReversed = false; // Reset flag after use
+
+                paint.IsAntialias = true;
+
+                // Handle line thickness vs. fill
+                if (thicknessDots <= 0)
+                {
+                    // Thickness 0 or less means fill the ellipse
+                    paint.Style = SKPaintStyle.Fill;
+                    _logger.LogTrace("Drawing filled ellipse in Rect=({L:F1},{T:F1}, W={W:F1}, H={H:F1}), Color={C}",
+                                     ovalRect.Left, ovalRect.Top, ovalRect.Width, ovalRect.Height, paint.Color);
+                    canvas.DrawOval(ovalRect, paint);
+                }
+                else
+                {
+                    // Thickness > 0 means draw a border
+                    paint.Style = SKPaintStyle.Stroke;
+                    paint.StrokeWidth = Math.Max(1, pixelThickness);
+
+                    // Adjust rect for stroke width (draws border inside the bounds)
+                    float inset = paint.StrokeWidth / 2.0f;
+                    ovalRect.Inflate(-inset, -inset);
+
+                    // Ensure rect is still valid after potentially large inset
+                    if (ovalRect.Width <= 0 || ovalRect.Height <= 0)
+                    {
+                        _logger.LogWarning("^GE border thickness {T} is too large for dimensions {W}x{H}. Skipping draw.", pixelThickness, pixelWidth, pixelHeight);
+                    }
+                    else
+                    {
+                        _logger.LogTrace("Drawing bordered ellipse in Rect=({L:F1},{T:F1}, W={W:F1}, H={H:F1}), Thick={T:F1}, Color={C}",
+                                         ovalRect.Left, ovalRect.Top, ovalRect.Width, ovalRect.Height, paint.StrokeWidth, paint.Color);
+                        canvas.DrawOval(ovalRect, paint);
+                    }
+                }
+            }
+        }
         private void RenderGraphicDiagonalLine(SKCanvas canvas, ZplRenderState state, string parameters)
         {
             // Parameters: w(width), h(height), t(thickness), c(color B/W), o(orientation L/R)

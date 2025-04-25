@@ -45,7 +45,7 @@ namespace ZplRendererTester
 ^FO220,155^FDShelbyville TN 38102^FS
 ^FO220,195^FDUnited States (USA)^FS
 ^FO50,250^GB700,3,3^FS
-   ^FO50,300^GD400,100,5,B,L^FS
+   ^FO100,400^GE200,100,8,B^FS
 ^FX Second section with recipient address and permit information.
 ^CFA,30
 ^FO50,300^FDJohn Doe^FS
