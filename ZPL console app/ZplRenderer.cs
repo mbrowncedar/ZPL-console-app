@@ -141,7 +141,7 @@ namespace ZplRendererLib
                     else // Process other commands or non-barcode FD
                     {
                         // Cancel pending barcode if another command appears before FD
-                        if (command.CommanthadCode != "FD" && currentState.CurrentBarcodeCommand != null)
+                        if (command.CommandCode != "FD" && currentState.CurrentBarcodeCommand != null)
                         {
                             _logger.LogWarning("Cancelling pending barcode {BarcodeCmd} because {CurrentCmd} command was received before FD data.", currentState.CurrentBarcodeCommand, command);
                             currentState.CurrentBarcodeCommand = null;
