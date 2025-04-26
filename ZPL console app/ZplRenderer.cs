@@ -140,7 +140,7 @@ namespace ZplRendererLib
                         {
                             // Format Control
                             case "XA": case "XZ": break; // Start/End Format
-                            case "FS": _logger.LogDebug("Field Separator (^FS) encountered."); break; // Field Separator
+                            
 
                             // Label/State Setup
                             case "LH": HandleLhCommand(currentState, command.Parameters); break; // Label Home
@@ -154,6 +154,7 @@ namespace ZplRendererLib
                             case "BY": HandleByCommand(currentState, command.Parameters); break; // Barcode Defaults
                             case "FB": HandleFbCommand(currentState, command.Parameters); break; // Field Block
                             case "FR": HandleFrCommand(currentState, command.Parameters); break; // Field Reverse
+                            case "FS": HandleFsCommand(currentState, command.Parameters); break; // **** UPDATED **** Field Separator
 
                             // Drawing Commands
                             case "FD": // Field Data (handles regular text)
@@ -604,6 +605,16 @@ namespace ZplRendererLib
             }
             else { _logger.LogTrace("No parameters provided for ^B3."); }
         }
+        // ^FS - Field Separator
+        private void HandleFsCommand(ZplRenderState state, string parameters)
+        {
+            _logger.LogDebug("Handled ^FS: Field Separator encountered. Resetting field-specific states.");
+            // Reset states that are typically field-specific
+            state.IsFieldReversed = false;
+            // Reset Field Block state as well, as ^FB applies to the next ^FD field
+            state.FieldBlockWidthDots = 0;
+            // Potentially reset other field-specific states here if added later
+        }
         private void HandleFrCommand(ZplRenderState state, string parameters)
         {
             state.IsFieldReversed = !state.IsFieldReversed;
@@ -633,14 +644,121 @@ namespace ZplRendererLib
         }
         private void HandleDgCommand(ZplRenderState state, ZplCommand command)
         {
-            _logger.LogDebug("Handling ~DG command..."); string imageName = null; int totalBytes = 0; int bytesPerRow = 0; string hexData = null;
-            if (!string.IsNullOrEmpty(command.Parameters)) { string[] parts = command.Parameters.Split(new char[] { ',' }, 4); if (parts.Length > 0 && !string.IsNullOrWhiteSpace(parts[0])) { imageName = parts[0].Trim(); } if (parts.Length > 1 && int.TryParse(parts[1].Trim(), out int t)) { totalBytes = t; } if (parts.Length > 2 && int.TryParse(parts[2].Trim(), out int w)) { bytesPerRow = w; } if (parts.Length > 3 && !string.IsNullOrWhiteSpace(parts[3])) { hexData = parts[3].Trim(); } }
-            _logger.LogInformation("Parsed ~DG: Name='{Name}', TotalBytes={T}, BytesPerRow={W}", imageName, totalBytes, bytesPerRow); _logger.LogTrace("  Hex Data (full): {Data}", hexData);
-            if (string.IsNullOrEmpty(imageName) || totalBytes <= 0 || bytesPerRow <= 0 || string.IsNullOrEmpty(hexData)) { _logger.LogError("~DG command ignored: Invalid or missing parameters. Name='{Name}', TotalBytes={T}, BytesPerRow={W}, HasHexData={HasData}", imageName, totalBytes, bytesPerRow, !string.IsNullOrEmpty(hexData)); return; }
-            _logger.LogTrace("Decoding hex data..."); byte[] graphicBytes = DecodeHexToBytes(hexData); if (graphicBytes == null) { _logger.LogError("~DG failed: Could not decode hex data for image '{Name}'.", imageName); return; }
-            _logger.LogDebug("Successfully decoded {Count} bytes of graphic data for '{Name}'. Expected {Expected}.", graphicBytes.Length, imageName, totalBytes);
-            _logger.LogTrace("Calling CreateBitmapFromMonochromeData..."); SKBitmap bitmap = CreateBitmapFromMonochromeData(graphicBytes, bytesPerRow, totalBytes);
-            if (bitmap != null) { _logger.LogInformation("Successfully created {W}x{H} bitmap for '{Name}'.", bitmap.Width, bitmap.Height, imageName); _graphicStore[imageName] = bitmap; _logger.LogDebug("Stored graphic '{Name}' in memory store.", imageName); } else { _logger.LogError("~DG failed: Could not create bitmap for image '{Name}'.", imageName); }
+            // Format: ~DGd:o.x,t,w,data  OR ~DGd:o.x,t,w,:B64:data
+            _logger.LogDebug("Handling ~DG command...");
+
+            string imageName = null;
+            int totalBytes = 0;
+            int bytesPerRow = 0;
+            string dataString = null;
+            bool isBase64 = false;
+
+            // 1. Parse Parameters carefully
+            if (!string.IsNullOrEmpty(command.Parameters))
+            {
+                // Split up to first 3 commas
+                string[] initialParts = command.Parameters.Split(new char[] { ',' }, 4);
+
+                if (initialParts.Length > 0 && !string.IsNullOrWhiteSpace(initialParts[0])) imageName = initialParts[0].Trim();
+                if (initialParts.Length > 1 && int.TryParse(initialParts[1].Trim(), out int t)) totalBytes = t;
+                if (initialParts.Length > 2 && int.TryParse(initialParts[2].Trim(), out int w)) bytesPerRow = w;
+
+                // Check if the 4th part starts with the Base64 prefix
+                if (initialParts.Length > 3 && !string.IsNullOrWhiteSpace(initialParts[3]))
+                {
+                    string potentialData = initialParts[3].TrimStart(); // Trim leading whitespace only
+                    const string b64Prefix = ":B64:";
+                    if (potentialData.StartsWith(b64Prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        isBase64 = true;
+                        // Remove the prefix and any surrounding whitespace/newlines from the actual data
+                        dataString = potentialData.Substring(b64Prefix.Length).Trim();
+                        _logger.LogInformation("Detected Base64 encoded graphic data.");
+                    }
+                    else
+                    {
+                        // Assume Hex data if prefix not found
+                        isBase64 = false;
+                        dataString = potentialData.Trim(); // Trim surrounding whitespace
+                        _logger.LogInformation("Assuming Hex encoded graphic data.");
+                    }
+                }
+            }
+
+            _logger.LogInformation("Parsed ~DG: Name='{Name}', TotalBytes={T}, BytesPerRow={W}, IsBase64={IsB64}", imageName, totalBytes, bytesPerRow, isBase64);
+            _logger.LogTrace("  Data String (truncated): {Data}", dataString?.Length > 100 ? dataString.Substring(0, 100) + "..." : dataString);
+
+            // 2. Validate Parameters
+            if (string.IsNullOrEmpty(imageName) || totalBytes <= 0 || bytesPerRow <= 0 || string.IsNullOrEmpty(dataString))
+            {
+                _logger.LogError("~DG command ignored: Invalid or missing parameters. Name='{Name}', TotalBytes={T}, BytesPerRow={W}, HasData={HasData}",
+                                 imageName, totalBytes, bytesPerRow, !string.IsNullOrEmpty(dataString));
+                return;
+            }
+
+            SKBitmap bitmap = null;
+            try
+            {
+                if (isBase64)
+                {
+                    // 3a. Decode Base64 Data
+                    _logger.LogTrace("Decoding Base64 data...");
+                    // Remove potential newlines within the base64 string before decoding
+                    string cleanBase64 = Regex.Replace(dataString, @"\s+", "");
+                    byte[] imageBytes = Convert.FromBase64String(cleanBase64);
+                    _logger.LogDebug("Successfully decoded {Count} bytes of Base64 data for '{Name}'.", imageBytes.Length, imageName);
+
+                    // 4a. Create SKBitmap using SkiaSharp's decoder (handles PNG, JPG etc.)
+                    _logger.LogTrace("Calling SKBitmap.Decode for Base64 data...");
+                    bitmap = SKBitmap.Decode(imageBytes);
+                    if (bitmap == null)
+                    {
+                        _logger.LogError("~DG failed: SKBitmap.Decode returned null for Base64 data of image '{Name}'. Data might be corrupted or unsupported format.", imageName);
+                        return;
+                    }
+                    _logger.LogInformation("Successfully decoded Base64 data into {W}x{H} bitmap for '{Name}'.", bitmap.Width, bitmap.Height, imageName);
+                }
+                else // Assume Hex Data
+                {
+                    // 3b. Decode Hex Data
+                    _logger.LogTrace("Decoding hex data...");
+                    byte[] graphicBytes = DecodeHexToBytes(dataString);
+                    if (graphicBytes == null) { _logger.LogError("~DG failed: Could not decode hex data for image '{Name}'.", imageName); return; }
+                    _logger.LogDebug("Successfully decoded {Count} bytes of hex data for '{Name}'. Expected {Expected}.", graphicBytes.Length, imageName, totalBytes);
+
+                    // 4b. Create SKBitmap from monochrome data
+                    _logger.LogTrace("Calling CreateBitmapFromMonochromeData...");
+                    bitmap = CreateBitmapFromMonochromeData(graphicBytes, bytesPerRow, totalBytes);
+                    if (bitmap == null)
+                    {
+                        _logger.LogError("~DG failed: Could not create bitmap from monochrome hex data for image '{Name}'.", imageName);
+                        return;
+                    }
+                    _logger.LogInformation("Successfully created {W}x{H} monochrome bitmap for '{Name}'.", bitmap.Width, bitmap.Height, imageName);
+                }
+
+                // 5. Store Bitmap (common for both paths)
+                if (bitmap != null)
+                {
+                    // Dispose existing bitmap with the same name if necessary before overwriting
+                    if (_graphicStore.TryGetValue(imageName, out SKBitmap oldBitmap))
+                    {
+                        oldBitmap?.Dispose();
+                        _logger.LogTrace("Disposed previous bitmap with name '{Name}'.", imageName);
+                    }
+                    _graphicStore[imageName] = bitmap; // Store the new bitmap
+                    _logger.LogDebug("Stored graphic '{Name}' in memory store.", imageName);
+                }
+            }
+            catch (System.FormatException formatEx)
+            {
+                _logger.LogError(formatEx, "~DG failed: Error decoding {Format} data for image '{Name}'.", isBase64 ? "Base64" : "Hex", imageName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "~DG failed: Unexpected error processing image '{Name}'.", imageName);
+                bitmap?.Dispose(); // Ensure disposal on error if bitmap was partially created
+            }
         }
         private byte[] DecodeHexToBytes(string hexDataString)
         {
@@ -742,7 +860,7 @@ namespace ZplRendererLib
                 using (SKTypeface typeface = SKTypeface.FromFile(actualFontFile, fontIndex)) using (SKPaint paint = new SKPaint())
                 {
                     if (typeface == null) { _logger.LogError("RenderText failed: SKTypeface.FromFile returned null..."); return; }
-                    paint.Typeface = typeface; paint.TextSize = state.ConvertDimensionToPixels(fontHeightDots); bool isReversed = state.IsFieldReversed; paint.Color = isReversed ? SKColors.White : SKColors.Black; if (isReversed) _logger.LogTrace("  Applying field reverse (White text)"); paint.IsAntialias = true;
+                    paint.Typeface = typeface; paint.TextSize = state.ConvertDimensionToPixels(fontHeightDots); bool isReversed = state.IsFieldReversed; paint.Color = isReversed ? SKColors.White : SKColors.Black; if (isReversed) _logger.LogTrace("  Applying field reverse (White text)"); /* state.IsFieldReversed = false; */ paint.IsAntialias = true;
                     if (rotation != 'N') { _logger.LogWarning("RenderText: Rotation '{Rotation}' not fully implemented. Drawing normally.", rotation); }
                     if (!isFieldBlockActive) { float baselineY = originY + paint.TextSize; _logger.LogTrace("  Drawing simple text line at ({X:F1},{Y:F1})", originX, baselineY); canvas.DrawText(data, originX, baselineY, paint); }
                     else
@@ -766,7 +884,8 @@ namespace ZplRendererLib
                         }
                     }
                     if (isFieldBlockActive) { _logger.LogTrace("  Resetting Field Block state."); state.FieldBlockWidthDots = 0; }
-                    if (isReversed) state.IsFieldReversed = false;
+                    // Reset FR flag in HandleFsCommand now
+                    // if (isReversed) state.IsFieldReversed = false;
                 }
             }
             catch (Exception ex) { _logger.LogError(ex, "RenderText failed during SkiaSharp operation for font '{FontPath}'. Text='{Data}'", fontPath, data); }
