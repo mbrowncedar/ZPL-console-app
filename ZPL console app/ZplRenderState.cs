@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO; // Required for File.Exists check
 using System.Globalization; // Required for CultureInfo in TryParse
 using System.Linq; // Required for FirstOrDefault
+using System.Runtime.InteropServices; // Needed for OSPlatform check
 
 namespace ZplRendererLib
 {
@@ -13,40 +14,25 @@ namespace ZplRendererLib
     internal class ZplRenderState // internal as it's used only by ZplRenderer
     {
         // --- Position Properties ---
-        // --- Field Reverse State ---
-        public bool IsFieldReversed { get; set; } = false;
         public int LabelHomeX { get; set; } = 0;
         public int LabelHomeY { get; set; } = 0;
         public int CurrentX { get; set; } = 0;
         public int CurrentY { get; set; } = 0;
         public int DensityDpi { get; }
-        // --- Field Block State (^FB) ---
-        public int FieldBlockWidthDots { get; set; } = 0; // 0 means ^FB is inactive
-        public int FieldBlockMaxLines { get; set; } = 1;
-        public int FieldBlockLineSpacingDots { get; set; } = 0; // Added spacing between lines
-        public char FieldBlockJustification { get; set; } = 'L'; // L, R, C, J
-        public int FieldBlockHangingIndentDots { get; set; } = 0;
+
         // --- Font Properties ---
         public string CurrentFontIdentifier { get; set; } = "0";
         public int CurrentFontHeightDots { get; set; } = 10;
         public int CurrentFontWidthDots { get; set; } = 10;
         public char CurrentFontRotation { get; set; } = 'N';
 
-        // *** Make sure this property definition exists ***
-        public string DefaultTtfFontPath { get; set; } = @"C:\ZplOutputTemp\Fonts\arial.ttf"; // <-- !!! CONFIGURE / VERIFY PATH !!!
+        // *** Default TTF Font Path (determined at runtime) ***
+        public string DefaultTtfFontPath { get; private set; }
 
         // --- Font Mapping Dictionary ---
-        public Dictionary<string, string> FontMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "0", @"C:\ZplOutputTemp\Fonts\arial.ttf" },
-            { "A", @"C:\ZplOutputTemp\Fonts\arial.ttf" },
-            { "B", @"C:\ZplOutputTemp\Fonts\cour.ttf" },
-            { "D", @"C:\ZplOutputTemp\Fonts\arial.ttf" },
-            { "F", @"C:\ZplOutputTemp\Fonts\arial.ttf" },
-            { "DEFAULT", @"C:\ZplOutputTemp\Fonts\arial.ttf" }
-            // Add other mappings as needed
-        };
-        private string _ultimateFallbackFontPath = @"C:\ZplOutputTemp\Fonts\arial.ttf";
+        // **** Changed FontMap to be readonly after initialization ****
+        public IReadOnlyDictionary<string, string> FontMap { get; private set; }
+        private string _ultimateFallbackFontPath = null; // Will be set based on DefaultTtfFontPath
 
         // --- Barcode Properties ---
         public int BarcodeModuleWidthDots { get; set; } = 2;
@@ -57,69 +43,127 @@ namespace ZplRendererLib
         public ZplCommand CurrentBarcodeCommand { get; set; } = null;
         public Dictionary<string, string> CurrentBarcodeParams { get; set; } = new Dictionary<string, string>();
 
-        public ZplRenderState(int densityDpi)
+        // --- Field Block State (^FB) ---
+        public int FieldBlockWidthDots { get; set; } = 0; // 0 means ^FB is inactive
+        public int FieldBlockMaxLines { get; set; } = 1;
+        public int FieldBlockLineSpacingDots { get; set; } = 0; // Added spacing between lines
+        public char FieldBlockJustification { get; set; } = 'L'; // L, R, C, J
+        public int FieldBlockHangingIndentDots { get; set; } = 0;
+
+        // --- Field Reverse State ---
+        public bool IsFieldReversed { get; set; } = false; // Default to normal printing
+
+        // **** Updated Constructor to accept optional font map ****
+        public ZplRenderState(int densityDpi, Dictionary<string, string> fontMapOverride = null)
         {
             DensityDpi = densityDpi > 0 ? densityDpi : 203;
-            // Initialize DefaultTtfFontPath before InitializeFontPaths uses it
-            InitializeDefaultFontPath();
-            InitializeFontPaths();
+
+            // Use provided font map or create default
+            var initialFontMap = fontMapOverride ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                // Default mappings - these might be overwritten by InitializeFontPaths
+                { "0", @"C:\Windows\Fonts\arial.ttf" },
+                { "A", @"C:\Windows\Fonts\arial.ttf" },
+                { "B", @"C:\Windows\Fonts\cour.ttf" }, // Courier New
+                { "D", @"C:\Windows\Fonts\arial.ttf" },
+                { "F", @"C:\Windows\Fonts\arial.ttf" },
+                { "DEFAULT", @"C:\Windows\Fonts\arial.ttf" }
+            };
+
+            // Initialize DefaultTtfFontPath and _ultimateFallbackFontPath based on OS/availability
+            InitializeDefaultFontPath(initialFontMap); // Pass the map to potentially update font B
+
+            // Update the initial map with potentially better OS-specific paths
+            InitializeFontPaths(initialFontMap);
+
+            // Set the final, read-only FontMap property
+            FontMap = initialFontMap;
         }
 
         // Sets the initial DefaultTtfFontPath based on OS detection
-        private void InitializeDefaultFontPath()
+        // **** Updated to accept and potentially modify the map ****
+        private void InitializeDefaultFontPath(Dictionary<string, string> fontMap)
         {
-            string initialDefault = @"C:\ZplOutputTemp\Fonts\arial.ttf";
-            // Check if the initial default exists
-            bool initialDefaultExists = File.Exists(initialDefault);
+            string arialPath = null;
+            string courierPath = null;
 
-            // Try OS-specific paths only if the initial Windows path doesn't exist
-            if (!initialDefaultExists)
+            // Define potential paths for different OS
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Linux))
-                {
-                    string[] linuxPaths = { /* ... common paths ... */ };
-                    initialDefault = linuxPaths.FirstOrDefault(File.Exists) ?? string.Empty;
-                }
-                else if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX))
-                {
-                    string[] macPaths = { /* ... common paths ... */ };
-                    initialDefault = macPaths.FirstOrDefault(p => File.Exists(p.Split(',')[0])) ?? string.Empty;
-                }
-                else { initialDefault = @"C:\ZplOutputTemp\Fonts\arial.ttf"; }
+                arialPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "arial.ttf");
+                courierPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "cour.ttf");
             }
-            // If still no valid path found after OS checks, set to null (will cause errors later if not mapped)
-            if (string.IsNullOrEmpty(initialDefault) || !File.Exists(initialDefault.Split(',')[0]))
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
-                DefaultTtfFontPath = null;
+                string[] linuxArialPaths = {
+                    "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+                    "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                };
+                arialPath = linuxArialPaths.FirstOrDefault(File.Exists);
+
+                string[] linuxCourierPaths = {
+                    "/usr/share/fonts/truetype/msttcorefonts/cour.ttf", // Courier New
+                    "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                };
+                courierPath = linuxCourierPaths.FirstOrDefault(File.Exists);
             }
-            else
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                DefaultTtfFontPath = initialDefault;
+                string[] macArialPaths = {
+                    "/Library/Fonts/Arial.ttf",
+                    "/System/Library/Fonts/Arial.ttf", // Newer macOS might use this
+                    "/System/Library/Fonts/Supplemental/Arial.ttf",
+                 };
+                arialPath = macArialPaths.FirstOrDefault(File.Exists);
+
+                string[] macCourierPaths = {
+                    "/Library/Fonts/Courier New.ttf",
+                    "/System/Library/Fonts/Courier New.ttf", // Newer macOS might use this
+                    "/System/Library/Fonts/Supplemental/Courier New.ttf",
+                 };
+                courierPath = macCourierPaths.FirstOrDefault(File.Exists);
             }
+
+            // Set the determined default path, fallback to null if none found
+            DefaultTtfFontPath = File.Exists(arialPath) ? arialPath : null;
             _ultimateFallbackFontPath = DefaultTtfFontPath; // Use the determined default as ultimate fallback
+
+            // Update FontMap specific entry for B if a valid Courier path was found
+            if (File.Exists(courierPath))
+            {
+                fontMap["B"] = courierPath; // Update the passed-in map
+            }
+            else if (DefaultTtfFontPath != null)
+            {
+                // Fallback Courier to default Arial if Courier wasn't found but Arial was
+                fontMap["B"] = DefaultTtfFontPath; // Update the passed-in map
+            }
+            // If neither found, FontMap["B"] retains its initial value from the dictionary creation
         }
 
 
         // Updates FontMap based on determined default
-        private void InitializeFontPaths()
+        // **** Updated to accept the map ****
+        private void InitializeFontPaths(Dictionary<string, string> fontMap)
         {
-            FontMap["DEFAULT"] = DefaultTtfFontPath; // Use the property set in InitializeDefaultFontPath
+            // Only proceed if a default path was actually found
+            if (string.IsNullOrEmpty(DefaultTtfFontPath)) return;
 
-            // Update other initial mappings if they point to a non-existent default path
-            // This assumes the dictionary was initialized with Windows paths
-            const string defaultWinPath = @"C:\ZplOutputTemp\Fonts\arial.ttf";
-            const string defaultCourPath = @"C:\ZplOutputTemp\Fonts\cour.ttf";
-            bool winDefaultExists = File.Exists(defaultWinPath); // Check just once
+            fontMap["DEFAULT"] = DefaultTtfFontPath;
 
-            // Only overwrite if the original path was the non-existent windows default
-            if (!winDefaultExists)
+            // Update other mappings that might have pointed to the Windows default
+            const string defaultWinArialPath = @"C:\Windows\Fonts\arial.ttf";
+            if (DefaultTtfFontPath != defaultWinArialPath)
             {
-                if (FontMap.TryGetValue("0", out var path0) && path0 == defaultWinPath) FontMap["0"] = DefaultTtfFontPath;
-                if (FontMap.TryGetValue("A", out var pathA) && pathA == defaultWinPath) FontMap["A"] = DefaultTtfFontPath;
-                if (FontMap.TryGetValue("B", out var pathB) && pathB == defaultCourPath) FontMap["B"] = DefaultTtfFontPath; // Fallback Cour to default too
-                if (FontMap.TryGetValue("D", out var pathD) && pathD == defaultWinPath) FontMap["D"] = DefaultTtfFontPath;
-                if (FontMap.TryGetValue("F", out var pathF) && pathF == defaultWinPath) FontMap["F"] = DefaultTtfFontPath;
+                // Update only if the current mapping points to the old Windows default
+                if (fontMap.TryGetValue("0", out var path0) && path0 == defaultWinArialPath) fontMap["0"] = DefaultTtfFontPath;
+                if (fontMap.TryGetValue("A", out var pathA) && pathA == defaultWinArialPath) fontMap["A"] = DefaultTtfFontPath;
+                if (fontMap.TryGetValue("D", out var pathD) && pathD == defaultWinArialPath) fontMap["D"] = DefaultTtfFontPath;
+                if (fontMap.TryGetValue("F", out var pathF) && pathF == defaultWinArialPath) fontMap["F"] = DefaultTtfFontPath;
             }
+            // Font B (Courier) was handled in InitializeDefaultFontPath
         }
 
         // Coordinate/Dimension Conversion Helpers
@@ -127,108 +171,44 @@ namespace ZplRendererLib
         public float ConvertDimensionToPixels(int dots) { return Math.Max(1, dots); }
 
         // Parameter Parsing Helpers
-        // Replace the ParseIntegerParams method in ZplRenderState.cs
-
         public static int[] ParseIntegerParams(string parameters, int expectedCount, int[] defaultValues = null)
         {
             int[] result = new int[expectedCount];
-            // Initialize with defaults or zeros
-            if (defaultValues != null && defaultValues.Length == expectedCount)
-            {
-                Array.Copy(defaultValues, result, expectedCount);
-            }
-            else
-            {
-                for (int i = 0; i < expectedCount; i++) result[i] = 0;
-            }
-
-            // Early return if no parameters to parse
-            if (string.IsNullOrEmpty(parameters))
-            {
-                return result;
-            }
-
-            // Parse the parameters string
+            if (defaultValues != null && defaultValues.Length == expectedCount) { Array.Copy(defaultValues, result, expectedCount); }
+            else { for (int i = 0; i < expectedCount; i++) result[i] = 0; }
+            if (string.IsNullOrEmpty(parameters)) { return result; }
             string[] parts = parameters.Split(',');
             for (int i = 0; i < Math.Min(parts.Length, expectedCount); i++)
             {
-                if (!string.IsNullOrWhiteSpace(parts[i]) &&
-                    int.TryParse(parts[i].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-                {
-                    // Update the result array with the parsed value
-                    result[i] = value;
-                }
-                // If TryParse fails or part is empty, the default/initial value in result[i] remains
+                if (!string.IsNullOrWhiteSpace(parts[i]) && int.TryParse(parts[i].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
+                { result[i] = value; }
             }
-
-            // *** ADD THIS RETURN STATEMENT ***
-            // Ensure the result array is always returned after parsing attempt
             return result;
         }
-        public void ParseBarcodeParams(string p, int c) { /* ... implementation ... */ }
-        // Replace the GetBarcodeParam method in ZplRenderState.cs
 
+        // Get Barcode Parameters with Defaults
         public string GetBarcodeParam(string key, string defaultValue = null)
         {
-            if (CurrentBarcodeParams.TryGetValue(key, out var value))
-            {
-                // Key was found, return the associated value
-                return value;
-            }
-            else
-            {
-                // Key was not found, return the provided default value
-                return defaultValue;
-            }
-            // Now all paths explicitly return a value
+            return CurrentBarcodeParams.TryGetValue(key, out var value) ? value : defaultValue;
         }
 
-        // Corrected method for ZplRenderState.cs
-        // Alternative structure for GetBarcodeIntParam
-        // Replace the expression-bodied member with this standard block:
-        /// <summary>
-        /// Gets an integer parameter from the CurrentBarcodeParams dictionary.
-        /// </summary>
-        /// <param name="key">The parameter key (e.g., "P1", "P2").</param>
-        /// <param name="defaultValue">The value to return if the key is not found or parsing fails.</param>
-        /// <returns>The parsed integer value or the default value.</returns>
         public int GetBarcodeIntParam(string key, int defaultValue)
         {
-            int parsedValue; // Variable to store the successfully parsed value
-
-            // 1. Try to get the string value associated with the key
-            // 2. Check if the retrieved string is not null or whitespace
-            // 3. Try to parse the trimmed string into an integer
+            int parsedValue;
             if (CurrentBarcodeParams.TryGetValue(key, out var valueString) &&
                 !string.IsNullOrWhiteSpace(valueString) &&
-                int.TryParse(valueString.Trim(),
-                             NumberStyles.Integer,
-                             CultureInfo.InvariantCulture,
-                             out parsedValue))
+                int.TryParse(valueString.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsedValue))
             {
-                // If all steps succeeded (key found, value not empty, parsing successful)
-                return parsedValue; // Return the integer value obtained from TryParse
+                return parsedValue;
             }
-            else
-            {
-                // If any step failed (key not found, value empty, parsing failed)
-                return defaultValue; // Return the provided default value
-            }
-            // The structure ensures either the 'if' block or the 'else' block returns,
-            // satisfying the "all code paths return a value" requirement.
+            return defaultValue;
         }
 
-        // Corrected method for ZplRenderState.cs
         public bool GetBarcodeBoolParam(string key, bool defaultValue)
         {
-            // Get the parameter value, using "Y" or "N" as the effective default if key is missing
             string valueStr = GetBarcodeParam(key, defaultValue ? "Y" : "N");
-
-            // Explicitly check for "Y" or "N"
             if (valueStr.Equals("Y", StringComparison.OrdinalIgnoreCase)) return true;
             if (valueStr.Equals("N", StringComparison.OrdinalIgnoreCase)) return false;
-
-            // If the value retrieved was neither "Y" nor "N", return the original default boolean value
             return defaultValue;
         }
 
@@ -286,6 +266,7 @@ namespace ZplRendererLib
             {
                 actualFile = fontPath.Split(',')[0];
             }
+            // Check if the file exists before returning true
             return File.Exists(actualFile);
         }
     }

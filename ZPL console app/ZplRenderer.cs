@@ -27,7 +27,8 @@ namespace ZplRendererLib
         private readonly ILogger<ZplRenderer> _logger;
         private const int MaxZplLength = 50 * 1024; // Example limit
         private const int MaxImageDimensionPixels = 16384; // Example limit
-        private readonly string _allowedOutputDirectory = @"C:\ZplOutputTemp"; // !!! Needs configuration
+        // Default directory if not overridden by options
+        private const string DefaultAllowedOutputDirectory = @"C:\ZplOutputTemp";
 
         // Simple in-memory store for downloaded graphics (Name -> Bitmap)
         private Dictionary<string, SKBitmap> _graphicStore = new Dictionary<string, SKBitmap>(StringComparer.OrdinalIgnoreCase);
@@ -39,7 +40,7 @@ namespace ZplRendererLib
             // TEMPORARY TEST CODE: Preload an image
             try
             {
-                string testImagePath = @"C:\ZplOutputTemp\logo.png"; // <<< PUT A REAL PNG HERE
+                string testImagePath = @"C:\ZplOutputTemp\logo.png"; // <<< PUT A REAL PNG HERE <<< Consider making this configurable too
                 if (File.Exists(testImagePath))
                 {
                     SKBitmap testLogo = SKBitmap.Decode(testImagePath);
@@ -70,11 +71,23 @@ namespace ZplRendererLib
             if (options.DensityDpi <= 0 || options.WidthInches <= 0 || options.HeightInches <= 0) { _logger.LogError("Invalid dimensions or DPI: Width={W}, Height={H}, DPI={D}", options.WidthInches, options.HeightInches, options.DensityDpi); return ZplRenderResult.CreateFailure("Invalid dimensions or DPI provided."); }
             if (string.IsNullOrWhiteSpace(options.ZplCode)) { _logger.LogError("ZPL code cannot be null or empty."); return ZplRenderResult.CreateFailure("ZPL code cannot be null or empty."); }
             if (options.ZplCode.Length > MaxZplLength) { _logger.LogError("ZPL code length ({Len}) exceeds maximum allowed ({Max}).", options.ZplCode.Length, MaxZplLength); return ZplRenderResult.CreateFailure($"ZPL code exceeds maximum length of {MaxZplLength} bytes."); }
+            // **** Determine effective allowed directory ****
+            string effectiveAllowedDir = !string.IsNullOrWhiteSpace(options.AllowedOutputDirectoryOverride)
+                                        ? options.AllowedOutputDirectoryOverride
+                                        : DefaultAllowedOutputDirectory; // Use the const default
+
+            // **** Validate output path BEFORE main try block if saving ****
+
             if (options.OutputMode == ZplOutputMode.SaveToFile)
             {
                 string pathValidationError;
-                if (!IsValidOutputPath(options.OutputFilePath, _allowedOutputDirectory, out pathValidationError)) { _logger.LogError("Invalid output file path provided: {Error}", pathValidationError); return ZplRenderResult.CreateFailure($"Invalid output file path: {pathValidationError}"); }
-                _logger.LogDebug("Output file path appears valid: {Path}", options.OutputFilePath);
+                // **** Pass effectiveAllowedDir to validation ****
+                if (!IsValidOutputPath(options.OutputFilePath, effectiveAllowedDir, out pathValidationError))
+                {
+                    _logger.LogError("Invalid output file path provided: {Error}", pathValidationError);
+                    return ZplRenderResult.CreateFailure($"Invalid output file path: {pathValidationError}");
+                }
+                _logger.LogDebug("Output file path appears valid: {Path} (Allowed Base: {Base})", options.OutputFilePath, effectiveAllowedDir);
             }
 
             SKSurface surface = null;
@@ -101,7 +114,8 @@ namespace ZplRendererLib
 
                 // --- 4. Init State ---
                 _logger.LogDebug("Initializing render state...");
-                currentState = new ZplRenderState(options.DensityDpi);
+                // Pass FontMapOverride from options to ZplRenderState constructor
+                currentState = new ZplRenderState(options.DensityDpi, options.FontMapOverride);
 
                 // --- 5. Parse ---
                 _logger.LogDebug("Parsing ZPL raw commands...");
@@ -155,6 +169,7 @@ namespace ZplRendererLib
                             case "FB": HandleFbCommand(currentState, command.Parameters); break; // Field Block
                             case "FR": HandleFrCommand(currentState, command.Parameters); break; // Field Reverse
                             case "FS": HandleFsCommand(currentState, command.Parameters); break; // **** UPDATED **** Field Separator
+                            
 
                             // Drawing Commands
                             case "FD": // Field Data (handles regular text)
@@ -211,11 +226,12 @@ namespace ZplRendererLib
                     try
                     {
                         string pathValidationError;
-                        if (!IsValidOutputPath(filePath, _allowedOutputDirectory, out pathValidationError))
-                        {
-                            _logger.LogError("Invalid output file path: {Error}", pathValidationError);
-                            return ZplRenderResult.CreateFailure($"Invalid output file path: {pathValidationError}");
-                        }
+                        // **** Path validation moved outside the try block, so no need to repeat here ****
+                        // if (!IsValidOutputPath(filePath, _allowedOutputDirectory, out pathValidationError))
+                        //{
+                        //    _logger.LogError("Invalid output file path: {Error}", pathValidationError);
+                        //    return ZplRenderResult.CreateFailure($"Invalid output file path: {pathValidationError}");
+                        //}
                         _logger.LogDebug("Output path passed validation.");
                         string directoryPath = Path.GetDirectoryName(filePath);
                         _logger.LogDebug($"Checking if directory exists: {directoryPath}");
@@ -794,7 +810,10 @@ namespace ZplRendererLib
         }
         private void RenderInterpretationLine(SKCanvas canvas, ZplRenderState state, string data, float bcX, float bcY, float bcW, float bcH, bool above, char orientation)
         {
-            if (string.IsNullOrEmpty(data)) return; _logger.LogDebug("Attempting to render interpretation line for '{Data}' (Center-Aligned)", data); if (orientation != 'N') { _logger.LogWarning("RenderInterpretationLine: Rotation '{Orient}' not implemented. Skipping interpretation line.", orientation); return; }
+            if (string.IsNullOrEmpty(data)) return; _logger.LogDebug("Attempting to render interpretation line for '{Data}' (Orientation: {O})", data, orientation);
+            // **** UPDATED: Check rotation before proceeding ****
+            if (orientation != 'N') { _logger.LogWarning("RenderInterpretationLine: Rotation '{Orient}' not implemented. Skipping interpretation line.", orientation); return; }
+
             string fontPath = state.GetCurrentTtfFontPath(); if (string.IsNullOrEmpty(fontPath)) { _logger.LogError("RenderInterpretationLine failed: Cannot find valid font path..."); return; }
             int fontIndex = 0; string actualFontFile = fontPath; if (fontPath.Contains(',')) { var parts = fontPath.Split(','); actualFontFile = parts[0]; if (parts.Length > 1 && int.TryParse(parts[1], out int index)) fontIndex = index; }
             if (!File.Exists(actualFontFile)) { _logger.LogError("RenderInterpretationLine failed: Font file not found..."); return; }
@@ -805,6 +824,7 @@ namespace ZplRendererLib
                     if (typeface == null) { _logger.LogError("RenderInterpretationLine failed: SKTypeface.FromFile returned null..."); return; }
                     paint.Typeface = typeface; float interpHeightDots = Math.Max(8, state.CurrentFontHeightDots * 0.8f); paint.TextSize = state.ConvertDimensionToPixels((int)Math.Round(interpHeightDots)); bool isReversed = state.IsFieldReversed; paint.Color = isReversed ? SKColors.White : SKColors.Black; if (isReversed) _logger.LogTrace("  Applying field reverse to interpretation line (White text)"); paint.IsAntialias = true; paint.TextAlign = SKTextAlign.Center;
                     float textCenterX = bcX + (bcW / 2.0f); float textBaselineY; const float gap = 3; if (above) { textBaselineY = bcY - gap; } else { textBaselineY = bcY + bcH + gap + paint.TextSize; }
+                    // **** Rotation logic removed from here, handled by RenderBarcode ****
                     _logger.LogTrace("Drawing interpretation line '{Data}' at center X={X:F1}, baseline Y={Y:F1}, Size={Size:F1}", data, textCenterX, textBaselineY, paint.TextSize); canvas.DrawText(data, textCenterX, textBaselineY, paint);
                 }
             }
@@ -847,48 +867,173 @@ namespace ZplRendererLib
             state.FieldBlockWidthDots = width; state.FieldBlockMaxLines = maxLines; state.FieldBlockLineSpacingDots = lineSpacing; state.FieldBlockJustification = justification; state.FieldBlockHangingIndentDots = hangingIndent;
             _logger.LogDebug("Handled ^FB: Width={W}, MaxLines={B}, LineSpace={C}, Justify='{D}', Indent={E}", width, maxLines, lineSpacing, justification, hangingIndent);
         }
+        // **** REPLACED RenderText ****
+        // Render Text (^FD data), handles ^FB Field Blocks and Rotation
         private void RenderText(SKCanvas canvas, ZplRenderState state, string data)
         {
-            if (string.IsNullOrEmpty(data)) { _logger.LogTrace("RenderText skipped: No data provided."); return; }
-            bool isFieldBlockActive = state.FieldBlockWidthDots > 0; (float originX, float originY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY); int fontHeightDots = state.CurrentFontHeightDots; char rotation = state.CurrentFontRotation;
-            string fontPath = state.GetCurrentTtfFontPath(); if (string.IsNullOrEmpty(fontPath)) { _logger.LogError("RenderText failed: Cannot find valid font path..."); return; }
-            int fontIndex = 0; string actualFontFile = fontPath; if (fontPath.Contains(',')) { var parts = fontPath.Split(','); actualFontFile = parts[0]; if (parts.Length > 1 && int.TryParse(parts[1], out int index)) fontIndex = index; }
+            if (string.IsNullOrEmpty(data))
+            {
+                _logger.LogTrace("RenderText skipped: No data provided.");
+                return; // Nothing to render
+            }
+
+            // Check if Field Block (^FB) is active
+            bool isFieldBlockActive = state.FieldBlockWidthDots > 0;
+
+            // 1. Get current position in pixels (Top-Left origin)
+            (float originX, float originY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY);
+
+            // 2. Get current font properties from state
+            int fontHeightDots = state.CurrentFontHeightDots;
+            char rotation = state.CurrentFontRotation; // Get rotation state
+
+            // 3. Get TTF Font Path
+            string fontPath = state.GetCurrentTtfFontPath();
+            if (string.IsNullOrEmpty(fontPath)) { _logger.LogError("RenderText failed: Cannot find valid font path..."); return; }
+            int fontIndex = 0;
+            string actualFontFile = fontPath;
+            if (fontPath.Contains(',')) { var parts = fontPath.Split(','); actualFontFile = parts[0]; if (parts.Length > 1 && int.TryParse(parts[1], out int index)) fontIndex = index; }
             if (!File.Exists(actualFontFile)) { _logger.LogError("RenderText failed: Font file not found..."); return; }
-            _logger.LogDebug("Rendering Text (Block Active={IsBlock}): '{Data}' at Origin=({X:F1},{Y:F1}) using Font='{FontPath}', H={H}d", isFieldBlockActive, data, originX, originY, fontPath, fontHeightDots);
+
+            _logger.LogDebug("Rendering Text (Block Active={IsBlock}, Rotation={Rot}): '{Data}' at Origin=({X:F1},{Y:F1}) using Font='{FontPath}', H={H}d",
+                             isFieldBlockActive, rotation, data, originX, originY, fontPath, fontHeightDots);
+
             try
             {
-                using (SKTypeface typeface = SKTypeface.FromFile(actualFontFile, fontIndex)) using (SKPaint paint = new SKPaint())
+                using (SKTypeface typeface = SKTypeface.FromFile(actualFontFile, fontIndex))
+                using (SKPaint paint = new SKPaint())
                 {
                     if (typeface == null) { _logger.LogError("RenderText failed: SKTypeface.FromFile returned null..."); return; }
-                    paint.Typeface = typeface; paint.TextSize = state.ConvertDimensionToPixels(fontHeightDots); bool isReversed = state.IsFieldReversed; paint.Color = isReversed ? SKColors.White : SKColors.Black; if (isReversed) _logger.LogTrace("  Applying field reverse (White text)"); /* state.IsFieldReversed = false; */ paint.IsAntialias = true;
-                    if (rotation != 'N') { _logger.LogWarning("RenderText: Rotation '{Rotation}' not fully implemented. Drawing normally.", rotation); }
-                    if (!isFieldBlockActive) { float baselineY = originY + paint.TextSize; _logger.LogTrace("  Drawing simple text line at ({X:F1},{Y:F1})", originX, baselineY); canvas.DrawText(data, originX, baselineY, paint); }
+
+                    paint.Typeface = typeface;
+                    paint.TextSize = state.ConvertDimensionToPixels(fontHeightDots);
+                    bool isReversed = state.IsFieldReversed;
+                    paint.Color = isReversed ? SKColors.White : SKColors.Black;
+                    if (isReversed) _logger.LogTrace("  Applying field reverse (White text)");
+                    paint.IsAntialias = true;
+
+                    // --- Text Drawing Logic ---
+                    if (!isFieldBlockActive)
+                    {
+                        // == Simple Text Drawing (No ^FB) ==
+                        float baselineY = originY + paint.TextSize; // Adjust Y for baseline
+
+                        // **** START ROTATION LOGIC ****
+                        bool isRotated = (rotation != 'N');
+                        if (isRotated)
+                        {
+                            canvas.Save();
+                            float degrees = 0;
+                            // ZPL Rotation: R=90, I=180, B=270 clockwise from Normal
+                            switch (rotation)
+                            {
+                                case 'R': degrees = 90; break;
+                                case 'I': degrees = 180; break;
+                                case 'B': degrees = 270; break;
+                            }
+                            // Rotate around the ^FO point (originX, originY)
+                            canvas.RotateDegrees(degrees, originX, originY);
+                            _logger.LogTrace("  Applying canvas rotation: {Deg} degrees around ({Px:F1},{Py:F1})", degrees, originX, originY);
+                        }
+
+                        try
+                        {
+                            _logger.LogTrace("  Drawing simple text line at ({X:F1},{Y:F1})", originX, baselineY);
+                            canvas.DrawText(data, originX, baselineY, paint);
+                        }
+                        finally
+                        {
+                            if (isRotated)
+                            {
+                                canvas.Restore();
+                                _logger.LogTrace("  Restored canvas state after rotation.");
+                            }
+                        }
+                        // **** END ROTATION LOGIC ****
+                    }
                     else
                     {
-                        _logger.LogTrace("  Applying Field Block: Width={W}d, MaxLines={Mx}, Spacing={Sp}d, Justify='{J}', Indent={I}d", state.FieldBlockWidthDots, state.FieldBlockMaxLines, state.FieldBlockLineSpacingDots, state.FieldBlockJustification, state.FieldBlockHangingIndentDots);
-                        float blockWidthPixels = state.ConvertDimensionToPixels(state.FieldBlockWidthDots); float lineSpacingPixels = state.ConvertDimensionToPixels(state.FieldBlockLineSpacingDots); float hangingIndentPixels = state.ConvertDimensionToPixels(state.FieldBlockHangingIndentDots); float currentY = originY; string[] paragraphs = data.Split(new[] { @"\\" }, StringSplitOptions.None); int linesDrawn = 0;
+                        // == Field Block Drawing (^FB Active) ==
+                        if (rotation != 'N')
+                        {
+                            _logger.LogWarning("Field Block (^FB) does not support rotation ('{Rotation}'). Drawing normally.", rotation);
+                            // Proceed to draw without rotation if FB is active
+                        }
+
+                        _logger.LogTrace("  Applying Field Block: Width={W}d, MaxLines={Mx}, Spacing={Sp}d, Justify='{J}', Indent={I}d",
+                                         state.FieldBlockWidthDots, state.FieldBlockMaxLines, state.FieldBlockLineSpacingDots, state.FieldBlockJustification, state.FieldBlockHangingIndentDots);
+
+                        float blockWidthPixels = state.ConvertDimensionToPixels(state.FieldBlockWidthDots);
+                        float lineSpacingPixels = state.ConvertDimensionToPixels(state.FieldBlockLineSpacingDots);
+                        float hangingIndentPixels = state.ConvertDimensionToPixels(state.FieldBlockHangingIndentDots);
+                        float currentY = originY; // Start Y at the field origin
+
+                        string[] paragraphs = data.Split(new[] { @"\\" }, StringSplitOptions.None); // ZPL newline
+                        int linesDrawn = 0;
+
                         foreach (string paragraph in paragraphs)
                         {
-                            if (linesDrawn >= state.FieldBlockMaxLines) break; string textToProcess = paragraph.Replace(@"\&", ""); string[] words = textToProcess.Split(' '); var currentLine = new StringBuilder(); float currentLineWidth = 0; bool isFirstLineOfPara = true;
+                            if (linesDrawn >= state.FieldBlockMaxLines) break;
+
+                            string textToProcess = paragraph.Replace(@"\&", ""); // Remove soft hyphens
+                            string[] words = textToProcess.Split(' ');
+                            var currentLine = new StringBuilder();
+                            float currentLineWidth = 0;
+                            bool isFirstLineOfPara = true;
+
                             for (int wordIndex = 0; wordIndex < words.Length; wordIndex++)
                             {
-                                string word = words[wordIndex]; if (string.IsNullOrEmpty(word)) continue; string potentialWord = (currentLine.Length > 0 ? " " : "") + word; float potentialWordWidth = paint.MeasureText(potentialWord); float availableWidth = blockWidthPixels - (isFirstLineOfPara ? hangingIndentPixels : 0);
-                                if (currentLineWidth + potentialWordWidth <= availableWidth || currentLine.Length == 0) { currentLine.Append(potentialWord); currentLineWidth += potentialWordWidth; }
+                                string word = words[wordIndex];
+                                if (string.IsNullOrEmpty(word)) continue;
+
+                                string potentialWord = (currentLine.Length > 0 ? " " : "") + word;
+                                float potentialWordWidth = paint.MeasureText(potentialWord);
+                                // Calculate available width considering hanging indent for the first line
+                                float availableWidth = blockWidthPixels - (isFirstLineOfPara ? hangingIndentPixels : 0);
+
+                                if (currentLineWidth + potentialWordWidth <= availableWidth || currentLine.Length == 0)
+                                {
+                                    currentLine.Append(potentialWord);
+                                    currentLineWidth += potentialWordWidth;
+                                }
                                 else
                                 {
-                                    if (currentLine.Length > 0) { DrawTextBlockLine(canvas, state, currentLine.ToString(), paint, originX, currentY, blockWidthPixels, isFirstLineOfPara); linesDrawn++; currentY += paint.TextSize + lineSpacingPixels; isFirstLineOfPara = false; if (linesDrawn >= state.FieldBlockMaxLines) break; }
-                                    currentLine.Clear(); currentLine.Append(word); currentLineWidth = paint.MeasureText(word); if (currentLineWidth > availableWidth) { _logger.LogWarning("Word '{Word}' is wider than the field block width ({W}px). Truncating or overflow may occur.", word, availableWidth); }
+                                    if (currentLine.Length > 0)
+                                    {
+                                        DrawTextBlockLine(canvas, state, currentLine.ToString(), paint, originX, currentY, blockWidthPixels, isFirstLineOfPara);
+                                        linesDrawn++;
+                                        currentY += paint.TextSize + lineSpacingPixels;
+                                        isFirstLineOfPara = false;
+                                        if (linesDrawn >= state.FieldBlockMaxLines) break;
+                                    }
+                                    currentLine.Clear().Append(word);
+                                    currentLineWidth = paint.MeasureText(word);
+                                    availableWidth = blockWidthPixels; // No indent for subsequent lines
+                                    if (currentLineWidth > availableWidth) { _logger.LogWarning("Word '{Word}' is wider than the field block width ({W}px).", word, availableWidth); }
                                 }
                             }
-                            if (currentLine.Length > 0 && linesDrawn < state.FieldBlockMaxLines) { DrawTextBlockLine(canvas, state, currentLine.ToString(), paint, originX, currentY, blockWidthPixels, isFirstLineOfPara); linesDrawn++; currentY += paint.TextSize + lineSpacingPixels; }
-                        }
+
+                            if (currentLine.Length > 0 && linesDrawn < state.FieldBlockMaxLines)
+                            {
+                                DrawTextBlockLine(canvas, state, currentLine.ToString(), paint, originX, currentY, blockWidthPixels, isFirstLineOfPara);
+                                linesDrawn++;
+                                currentY += paint.TextSize + lineSpacingPixels;
+                            }
+                        } // End paragraph loop
+
+                        // Reset Field Block state after processing this FD command
+                        _logger.LogTrace("  Resetting Field Block state.");
+                        state.FieldBlockWidthDots = 0; // Deactivate block
                     }
-                    if (isFieldBlockActive) { _logger.LogTrace("  Resetting Field Block state."); state.FieldBlockWidthDots = 0; }
-                    // Reset FR flag in HandleFsCommand now
+
+                    // Reset Field Reverse state (handled by ^FS now)
                     // if (isReversed) state.IsFieldReversed = false;
                 }
             }
-            catch (Exception ex) { _logger.LogError(ex, "RenderText failed during SkiaSharp operation for font '{FontPath}'. Text='{Data}'", fontPath, data); }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "RenderText failed during SkiaSharp operation for font '{FontPath}'. Text='{Data}'", fontPath, data);
+            }
         }
         private void DrawTextBlockLine(SKCanvas canvas, ZplRenderState state, string line, SKPaint paint, float blockOriginX, float currentY, float blockWidthPixels, bool isFirstLine)
         {
@@ -1037,7 +1182,8 @@ namespace ZplRendererLib
                 if (pixelHeight <= 0) pixelHeight = 10;
 
                 var writerOptions = new ZXing.Common.EncodingOptions { Margin = 0 };
-              //  if (writerOptions.Hints == null) writerOptions.Hints = new Dictionary<EncodeHintType, object>();
+               // if (writerOptions.Hints == null) writerOptions.Hints = new Dictionary<EncodeHintType, object>();
+
 
                 // --- Barcode Type Specific Options & Scaling ---
                 int zplMagnification = 1; // Used for QR, DataMatrix
@@ -1046,170 +1192,35 @@ namespace ZplRendererLib
                 switch (zxingFormat.Value)
                 {
                     case BarcodeFormat.QR_CODE:
-                        is2D = true;
-                        printInterpretationLine = false;
-                        zplMagnification = state.GetBarcodeIntParam("Magnification", 3);
-                        zplMagnification = Math.Clamp(zplMagnification, 1, 10);
-                        string eclQR = state.GetBarcodeParam("ErrorCorrection", "M");
-                        var qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M;
-                        switch (eclQR) { case "H": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.H; break; case "Q": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.Q; break; case "M": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M; break; case "L": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.L; break; }
-                        writerOptions.Hints[EncodeHintType.ERROR_CORRECTION] = qrEcLevel;
-                        writerOptions.Hints[EncodeHintType.CHARACTER_SET] = "UTF-8";
-                        _logger.LogTrace("  QR Code Params: ZplMagnification={Mag}, ErrorCorrection={ECL}, Charset=UTF-8", zplMagnification, qrEcLevel);
-                        writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true;
-                        break;
-
+                        is2D = true; printInterpretationLine = false; zplMagnification = state.GetBarcodeIntParam("Magnification", 3); zplMagnification = Math.Clamp(zplMagnification, 1, 10); string eclQR = state.GetBarcodeParam("ErrorCorrection", "M"); var qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M; switch (eclQR) { case "H": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.H; break; case "Q": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.Q; break; case "M": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.M; break; case "L": qrEcLevel = ZXing.QrCode.Internal.ErrorCorrectionLevel.L; break; }
+                        writerOptions.Hints[EncodeHintType.ERROR_CORRECTION] = qrEcLevel; writerOptions.Hints[EncodeHintType.CHARACTER_SET] = "UTF-8"; _logger.LogTrace("  QR Code Params: ZplMagnification={Mag}, ErrorCorrection={ECL}, Charset=UTF-8", zplMagnification, qrEcLevel); writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true; break;
                     case BarcodeFormat.PDF_417:
-                        is2D = true;
-                        printInterpretationLine = false; // PDF417 usually doesn't have one
-                        int securityLevel = state.GetBarcodeIntParam("SecurityLevel", 5); // Default 5? Check ZPL spec
-                        int cols = state.GetBarcodeIntParam("Columns", 0); // 0 = auto
-                        int rows = state.GetBarcodeIntParam("Rows", 0);    // 0 = auto
-                        bool truncate = state.GetBarcodeBoolParam("Truncate", false);
-
-                        // Map ZPL security 0-8 to ZXing EC levels 0-8
-                        writerOptions.Hints[EncodeHintType.ERROR_CORRECTION] = Math.Clamp(securityLevel, 0, 8); // Use the general Error Correction hint
-
-                        // **** START CORRECTION ****
-                        // Use PDF417_DIMENSIONS hint with a Dimension object
-                        if (cols > 0 || rows > 0)
-                        {
-                            // Specify exact dimensions if both are provided, otherwise min/max might be needed
-                            // Note: ZXing Dimension constructor might be (width, height) -> (cols, rows)
-                            // Let's assume fixed dimensions if specified. Min/Max might need more complex options.
-                            int minCols = cols > 0 ? cols : 1; // Example minimums if one is auto
-                            int maxCols = cols > 0 ? cols : 30; // ZXing default max is 30
-                            int minRows = rows > 0 ? rows : 3; // ZXing default min is 3
-                            int maxRows = rows > 0 ? rows : 90; // ZXing default max is 90
-
-                            // Create Dimension object (Check constructor order if needed)
-                            if (cols > 0 && rows > 0)
-                            {
-                                // Create Dimension object using (width, height) -> (cols, rows)
-                                var dimensions = new ZXing.Dimension(cols, rows);
-                                writerOptions.Hints[EncodeHintType.PDF417_DIMENSIONS] = dimensions;
-                                _logger.LogTrace("  Setting PDF417 Dimensions Hint: Cols={C}, Rows={R}", cols, rows);
-                            }
-                            else
-                            {
-                                _logger.LogTrace("  Using auto PDF417 dimensions (Cols or Rows not specified).");
-                                // Do not add the hint if rows/cols are auto
-                            }
-
-                            //var dimensions = new ZXing.Common.Dimension(maxCols, minCols, maxRows, minRows);
-                            //writerOptions.Hints[EncodeHintType.PDF417_DIMENSIONS] = dimensions;
-                            //_logger.LogTrace("  Setting PDF417 Dimensions Hint: Min({MinC},{MinR}), Max({MaxC},{MaxR})", minCols, minRows, maxCols, maxRows);
-
-
-
-                        }
-                        // REMOVED incorrect hints:
-                        // if (cols > 0) writerOptions.Hints[EncodeHintType.PDF417_MAX_COLS] = cols;
-                        // if (rows > 0) writerOptions.Hints[EncodeHintType.PDF417_MAX_ROWS] = rows;
-                        // **** END CORRECTION ****
-
-                        writerOptions.Hints[EncodeHintType.PDF417_COMPACT] = truncate; // Use compact mode if truncated?
-
-                        _logger.LogTrace("  PDF417 Params: SecLvl={Sec}, Cols={C}, Rows={R}, Trunc={T}", securityLevel, cols, rows, truncate);
-                        writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true;
-                        break;
-
+                        is2D = true; printInterpretationLine = false; int securityLevel = state.GetBarcodeIntParam("SecurityLevel", 5); int cols = state.GetBarcodeIntParam("Columns", 0); int rows = state.GetBarcodeIntParam("Rows", 0); bool truncate = state.GetBarcodeBoolParam("Truncate", false);
+                        writerOptions.Hints[EncodeHintType.ERROR_CORRECTION] = Math.Clamp(securityLevel, 0, 8);
+                        if (cols > 0 && rows > 0) { var dimensions = new ZXing.Dimension(cols, rows); writerOptions.Hints[EncodeHintType.PDF417_DIMENSIONS] = dimensions; _logger.LogTrace("  Setting PDF417 Dimensions Hint: Cols={C}, Rows={R}", cols, rows); } else { _logger.LogTrace("  Using auto PDF417 dimensions (Cols or Rows not specified)."); }
+                        writerOptions.Hints[EncodeHintType.PDF417_COMPACT] = truncate; _logger.LogTrace("  PDF417 Params: SecLvl={Sec}, Cols={C}, Rows={R}, Trunc={T}", securityLevel, cols, rows, truncate); writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true; break;
                     case BarcodeFormat.DATA_MATRIX:
-                        is2D = true;
-                        printInterpretationLine = false;
-                        // ZPL ^BX height is module height in dots. Magnification isn't a direct ZPL param here.
-                        // Let's use ZplModuleWidthDots for scaling factor like PDF417 height? Or default mag? Use ZplModuleWidthDots for now.
-                        zplMagnification = zplModuleWidthDots; // Reuse module width as magnification factor
-                        int dmCols = state.GetBarcodeIntParam("Columns", 0); // 0 = auto
-                        int dmRows = state.GetBarcodeIntParam("Rows", 0);    // 0 = auto
-                        // Format ID ignored for now
-                        int dmAspect = state.GetBarcodeIntParam("AspectRatio", 1); // 1=square, 2=rect
-
-                        if (dmCols > 0 && dmRows > 0)
-                        {
-                            writerOptions.Hints[EncodeHintType.DATA_MATRIX_SHAPE] = (dmAspect == 2) ? SymbolShapeHint.FORCE_RECTANGLE : SymbolShapeHint.FORCE_SQUARE;
-                            // ZXing might need specific dimensions set if not square/auto
-                            // writerOptions.Hints[EncodeHintType.DATA_MATRIX_MIN_SIZE] = new Dimension(dmCols, dmRows); // Need ZXing Dimension class
-                            // writerOptions.Hints[EncodeHintType.DATA_MATRIX_MAX_SIZE] = new Dimension(dmCols, dmRows);
-                            _logger.LogWarning("DataMatrix fixed Columns/Rows hints not fully implemented.");
-                        }
-                        else
-                        {
-                            writerOptions.Hints[EncodeHintType.DATA_MATRIX_SHAPE] = SymbolShapeHint.FORCE_NONE; // Auto shape
-                        }
-                        writerOptions.Hints[EncodeHintType.CHARACTER_SET] = "UTF-8"; // Assume UTF-8
-                        _logger.LogTrace("  DataMatrix Params: ZplMagnification={Mag}, Cols={C}, Rows={R}, Aspect={A}", zplMagnification, dmCols, dmRows, dmAspect);
-                        writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true;
-                        break;
-
-                    case BarcodeFormat.EAN_8:
-                    case BarcodeFormat.EAN_13:
-                    case BarcodeFormat.UPC_A:
-                    case BarcodeFormat.UPC_E:
-                        // Use standard 1D options
-                        writerOptions.Height = pixelHeight;
-                        writerOptions.Width = 0;
-                        writerOptions.PureBarcode = true;// !printInterpretationLine;
-                        // Check digit handling is usually automatic in ZXing for these formats
-                        break;
-
-                    default: // Other 1D codes
-                        writerOptions.Height = pixelHeight;
-                        writerOptions.Width = 0;
-                        writerOptions.PureBarcode = true; // !printInterpretationLine;
-                        break;
+                        is2D = true; printInterpretationLine = false; zplMagnification = zplModuleWidthDots; int dmCols = state.GetBarcodeIntParam("Columns", 0); int dmRows = state.GetBarcodeIntParam("Rows", 0); int dmAspect = state.GetBarcodeIntParam("AspectRatio", 1);
+                        if (dmCols > 0 && dmRows > 0) { writerOptions.Hints[EncodeHintType.DATA_MATRIX_SHAPE] = (dmAspect == 2) ? SymbolShapeHint.FORCE_RECTANGLE : SymbolShapeHint.FORCE_SQUARE; _logger.LogWarning("DataMatrix fixed Columns/Rows hints not fully implemented."); } else { writerOptions.Hints[EncodeHintType.DATA_MATRIX_SHAPE] = SymbolShapeHint.FORCE_NONE; }
+                        writerOptions.Hints[EncodeHintType.CHARACTER_SET] = "UTF-8"; _logger.LogTrace("  DataMatrix Params: ZplMagnification={Mag}, Cols={C}, Rows={R}, Aspect={A}", zplMagnification, dmCols, dmRows, dmAspect); writerOptions.Width = 0; writerOptions.Height = 0; writerOptions.PureBarcode = true; break;
+                    case BarcodeFormat.EAN_8: case BarcodeFormat.EAN_13: case BarcodeFormat.UPC_A: case BarcodeFormat.UPC_E: writerOptions.Height = pixelHeight; writerOptions.Width = 0; writerOptions.PureBarcode = !printInterpretationLine; break;
+                    default: writerOptions.Height = pixelHeight; writerOptions.Width = 0; writerOptions.PureBarcode = !printInterpretationLine; break;
                 }
 
                 // 4. Use SkiaSharp Barcode Writer
-                var writer = new ZXing.SkiaSharp.BarcodeWriter
-                {
-                    Format = zxingFormat.Value,
-                    Options = writerOptions
-                };
-                _logger.LogDebug("  Calling SkiaSharp ZXing Writer: Format={Fmt}, Options(H={H},W={W},Pure={P})",
-                                writer.Format, writerOptions.Height, writerOptions.Width, writerOptions.PureBarcode);
+                var writer = new ZXing.SkiaSharp.BarcodeWriter { Format = zxingFormat.Value, Options = writerOptions };
+                _logger.LogDebug("  Calling SkiaSharp ZXing Writer: Format={Fmt}, Options(H={H},W={W},Pure={P})", writer.Format, writerOptions.Height, writerOptions.Width, writerOptions.PureBarcode);
 
                 // 5. Generate initial SKBitmap
                 barcodeBitmap = writer.Write(data);
-
                 if (barcodeBitmap == null || barcodeBitmap.Width <= 0 || barcodeBitmap.Height <= 0) { _logger.LogError("SkiaSharp ZXing Write failed to generate bitmap for {Fmt}, Data='{Data}'", zxingFormat.Value, data); return; }
                 _logger.LogDebug("  SkiaSharp ZXing generated initial bitmap: {W}x{H}", barcodeBitmap.Width, barcodeBitmap.Height);
 
                 // 6. Calculate Target Dimensions based on ZPL parameters
-                float targetPixelWidth;
-                float targetPixelHeight;
-
-                if (zxingFormat == BarcodeFormat.QR_CODE || zxingFormat == BarcodeFormat.DATA_MATRIX)
-                {
-                    // Scale 2D codes based on ZPL magnification parameter (using zplMagnification calculated above)
-                    float scaleFactor = zplMagnification;
-                    targetPixelWidth = barcodeBitmap.Width * scaleFactor;
-                    targetPixelHeight = barcodeBitmap.Height * scaleFactor;
-                    _logger.LogTrace("  Scaling 2D Code using Factor={Factor}: Target Size={TW:F0}x{TH:F0}",
-                                    scaleFactor, targetPixelWidth, targetPixelHeight);
-                }
-                else if (zxingFormat == BarcodeFormat.PDF_417)
-                {
-                    // PDF417 height (^B7,,h) is module height. Width scales proportionally.
-                    // ZXing bitmap height should roughly correspond to (rows * module_height_pixels).
-                    // ZPL module height comes from ^BY w.
-                    // Scale factor = (Target Module Height / Generated Module Height)
-                    // We don't know generated module height easily.
-                    // Alternative: Scale width like other 1D codes, scale height based on ^B7 h param?
-                    // Let's try scaling width by module width, and height by ^B7 h param.
-                    targetPixelWidth = barcodeBitmap.Width * zplModuleWidthDots; // Scale width by module width
-                    targetPixelHeight = pixelHeight; // Use height parsed from ^B7 h param
-                    _logger.LogTrace("  Scaling PDF417 using ZplModWidth={ZplW} and ZplHeight={ZplH}: Target Size={TW:F0}x{TH:F0}",
-                                    zplModuleWidthDots, barcodeHeightDots, targetPixelWidth, targetPixelHeight);
-                }
-                else // Other 1D Barcodes (EAN, UPC, Code39, Code128 etc.)
-                {
-                    // Scale 1D barcode width based on ZPL module width 'w' (^BY w)
-                    targetPixelWidth = barcodeBitmap.Width * zplModuleWidthDots;
-                    targetPixelHeight = pixelHeight; // Height was already set from ^BY h or barcode param h
-                    _logger.LogTrace("  Scaling 1D Barcode using ZplModWidth={ZplW}: Target Size={TW:F0}x{TH:F0}",
-                                    zplModuleWidthDots, targetPixelWidth, targetPixelHeight);
-                }
+                float targetPixelWidth; float targetPixelHeight;
+                if (zxingFormat == BarcodeFormat.QR_CODE || zxingFormat == BarcodeFormat.DATA_MATRIX) { float scaleFactor = zplMagnification; targetPixelWidth = barcodeBitmap.Width * scaleFactor; targetPixelHeight = barcodeBitmap.Height * scaleFactor; _logger.LogTrace("  Scaling 2D Code using Factor={Factor}: Target Size={TW:F0}x{TH:F0}", scaleFactor, targetPixelWidth, targetPixelHeight); }
+                else if (zxingFormat == BarcodeFormat.PDF_417) { targetPixelWidth = barcodeBitmap.Width * zplModuleWidthDots; targetPixelHeight = pixelHeight; _logger.LogTrace("  Scaling PDF417 using ZplModWidth={ZplW} and ZplHeight={ZplH}: Target Size={TW:F0}x{TH:F0}", zplModuleWidthDots, barcodeHeightDots, targetPixelWidth, targetPixelHeight); }
+                else { targetPixelWidth = barcodeBitmap.Width * zplModuleWidthDots; targetPixelHeight = pixelHeight; _logger.LogTrace("  Scaling 1D Barcode using ZplModWidth={ZplW}: Target Size={TW:F0}x{TH:F0}", zplModuleWidthDots, targetPixelWidth, targetPixelHeight); }
 
                 // 7. Get Drawing Position & Define Destination Rect
                 (float pixelX, float pixelY) = state.ConvertDotsToPixels(state.CurrentX, state.CurrentY);
@@ -1218,21 +1229,41 @@ namespace ZplRendererLib
 
                 // 8. Handle Rotation and Draw
                 bool isRotated = (orientation != 'N');
-                if (isRotated) { canvas.Save(); /* ... rotate ... */ float degrees = 0; switch (orientation) { case 'R': degrees = 90; break; case 'I': degrees = 180; break; case 'B': degrees = 270; break; } canvas.RotateDegrees(degrees, pixelX, pixelY); _logger.LogDebug("  Applied canvas rotation: {Deg} degrees around ({Px:F1},{Py:F1})", degrees, pixelX, pixelY); }
+                int saveCount = 0; // **** ADDED **** Track canvas save state
+                if (isRotated)
+                {
+                    saveCount = canvas.Save(); // **** CHANGED **** Use Save() to get count
+                    float degrees = 0;
+                    switch (orientation) { case 'R': degrees = 90; break; case 'I': degrees = 180; break; case 'B': degrees = 270; break; }
+                    // Rotate around the barcode's top-left corner
+                    canvas.RotateDegrees(degrees, pixelX, pixelY);
+                    _logger.LogDebug("  Applied canvas rotation: {Deg} degrees around ({Px:F1},{Py:F1})", degrees, pixelX, pixelY);
+                }
+
                 try
                 {
                     // 9. Draw Scaled Bitmap
-                    using (var paint = new SKPaint { FilterQuality = SKFilterQuality.None }) // Use None for sharp barcodes
-                    { canvas.DrawBitmap(barcodeBitmap, destRect, paint); }
+                    using (var paint = new SKPaint { FilterQuality = SKFilterQuality.None })
+                    { canvas.DrawBitmap(barcodeBitmap, destRect, paint); } // Draw at original coordinates within rotated canvas
                     _logger.LogDebug("  Drew scaled barcode bitmap into DestRect ({L:F1}, {T:F1}, {W:F1}, {H:F1})", destRect.Left, destRect.Top, destRect.Width, destRect.Height);
 
                     // 10. Draw interpretation line if needed (only for 1D codes, EAN, UPC)
+                    // Pass orientation so it knows not to draw if rotated (as it doesn't support rotation yet)
                     if (!is2D && printInterpretationLine)
                     {
+                        // **** Interpretation line rotation needs to happen within RenderInterpretationLine ****
+                        // **** or be drawn before canvas.Restore() if we rotate here ****
                         RenderInterpretationLine(canvas, state, data, destRect.Left, destRect.Top, destRect.Width, destRect.Height, interpAbove, orientation);
                     }
                 }
-                finally { if (isRotated) { canvas.Restore(); _logger.LogDebug("  Restored canvas state after rotation."); } }
+                finally
+                {
+                    if (isRotated)
+                    {
+                        canvas.RestoreToCount(saveCount); // **** CHANGED **** Restore using count
+                        _logger.LogDebug("  Restored canvas state after rotation.");
+                    }
+                }
             }
             catch (Exception ex) { _logger.LogError(ex, "Error rendering barcode {Cmd}, Data='{Data}'", commandCode, data); }
             finally { barcodeBitmap?.Dispose(); state.CurrentBarcodeCommand = null; state.CurrentBarcodeParams.Clear(); }

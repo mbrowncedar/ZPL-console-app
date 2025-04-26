@@ -4,7 +4,6 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-using System;
 
 namespace ZplRendererLib
 {
@@ -42,6 +41,24 @@ namespace ZplRendererLib
         /// The full path where the PNG file should be saved if OutputMode is SaveToFile.
         /// </summary>
         public string OutputFilePath { get; set; }
+
+        // --- Optional Configuration Settings ---
+
+        /// <summary>
+        /// Optional. Overrides the default allowed base directory for OutputFilePath validation.
+        /// If null or empty, the renderer's default will be used.
+        /// </summary>
+        public string AllowedOutputDirectoryOverride { get; set; } = null;
+
+        /// <summary>
+        /// Optional. Provides a custom mapping from ZPL font identifiers (e.g., "0", "A", "B")
+        /// to TTF font file paths. If null, the renderer's default map will be used.
+        /// Use StringComparer.OrdinalIgnoreCase for the dictionary for best results.
+        /// Example: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "0", "/path/to/myfont.ttf" } }
+        /// </summary>
+        public Dictionary<string, string> FontMapOverride { get; set; } = null;
+
+        // Consider adding DefaultTtfFontPath override here too?
 
         // --- Optional settings can be added later ---
         // public string DefaultTtfFontPath { get; set; } = @"C:\ZplOutputTemp\Fonts\arial.ttf"; // Consider passing via options
